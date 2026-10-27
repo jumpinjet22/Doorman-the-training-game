@@ -1,8 +1,17 @@
 name: CI
 
+# Pushes to main, plus every PR. A PR branch's own pushes are covered by the
+# pull_request run, so they don't need a second run of their own.
 on:
   push:
+    branches: [main]
   pull_request:
+
+# A newer push to the same PR makes the older run pointless; cancel it. Runs
+# on main always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Nothing here writes to the repo, an issue or a PR.
 permissions:
