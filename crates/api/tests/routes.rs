@@ -397,7 +397,7 @@ async fn pair_answers_are_a_reply_or_both_bad(pool: PgPool) {
     let (status, _, _) = h.vote(None, vote_body(item, "delivery")).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let (status, _, _) = h
-        .vote(None, vote_body(item, &pair.replies[1].knock_key))
+        .vote(None, vote_body(item, &pair.replies[1].item_key))
         .await;
     assert_eq!(status, StatusCode::OK);
 }
@@ -494,7 +494,7 @@ async fn a_forged_cookie_never_becomes_someone_else(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../db/migrations")]
-async fn no_response_leaks_answers_or_judge_data(pool: PgPool) {
+async fn no_response_leaks_answers_or_generator_data(pool: PgPool) {
     let h = Harness::new(pool);
     let items = seed_day(&h.pool, day(TODAY)).await;
     let mut bodies = vec![h.get("/", None).await.2];
@@ -533,15 +533,7 @@ async fn no_response_leaks_answers_or_judge_data(pool: PgPool) {
     bodies.push(h.get("/yesterday", Some(&cookie)).await.2);
     bodies.push(h.get("/", Some(&cookie)).await.2);
     for body in &bodies {
-        for field in [
-            "gold",
-            "generator",
-            "judge",
-            "category_correct",
-            "knock_key",
-            "batch",
-            "example-1",
-        ] {
+        for field in ["gold", "intended_intent", "item_key", "batch", "example-1"] {
             assert!(!body.contains(field), "response mentions {field}: {body}");
         }
     }
@@ -561,7 +553,7 @@ async fn visitor_text_is_escaped(pool: PgPool) {
     };
     item.text = "<script>alert(1)</script>".into();
     item.scene = Some("<img src=x onerror=alert(2)>".into());
-    let key = item.knock_key.clone();
+    let key = item.item_key.clone();
     dorman_db::insert_item(&h.pool, &batch.batch, &batch.intents, &batch.items[0])
         .await
         .unwrap();
@@ -858,7 +850,7 @@ async fn networks_are_stored_only_as_salted_hashes_for_a_day(pool: PgPool) {
 
     // A day later, the next new player sweeps the old rows away.
     let tomorrow =
-        dorman_testkit::publish(&h.pool, day("2026-10-28"), &[items[0].knock_key.clone()]).await;
+        dorman_testkit::publish(&h.pool, day("2026-10-28"), &[items[0].item_key.clone()]).await;
     h.clock.advance(Duration::hours(25));
     let (status, _, _) = h
         .vote_from(
@@ -1234,7 +1226,7 @@ async fn a_streak_counts_days_in_a_row_and_a_missed_day_resets_it(pool: PgPool) 
     let keys: Vec<String> = batch
         .items
         .iter()
-        .map(|i| i.knock_key().to_string())
+        .map(|i| i.item_key().to_string())
         .collect();
     let day_text = |offset: i64| (day(TODAY) + Duration::days(offset)).to_string();
 
@@ -1305,7 +1297,7 @@ async fn a_day_of_cards_already_answered_still_counts_for_the_streak(pool: PgPoo
     // Tomorrow's set is items they've answered before, so there's nothing
     // to vote on: opening the day is enough.
     h.clock.advance(Duration::days(1));
-    let keys: Vec<String> = items.iter().map(|i| i.knock_key.clone()).collect();
+    let keys: Vec<String> = items.iter().map(|i| i.item_key.clone()).collect();
     dorman_testkit::publish(&h.pool, day("2026-10-28"), &keys).await;
     let (_, _, page) = h.get("/", Some(&cookie)).await;
     assert!(page.contains("🔥 2-day streak"), "{page}");
@@ -1400,10 +1392,7 @@ async fn the_card_cant_single_out_gold(pool: PgPool) {
     dorman_testkit::publish(
         &h.pool,
         day("2026-10-28"),
-        &[
-            items[gold].knock_key.clone(),
-            items[plain].knock_key.clone(),
-        ],
+        &[items[gold].item_key.clone(), items[plain].item_key.clone()],
     )
     .await;
     let expected: String = (0..items.len())
@@ -1451,7 +1440,7 @@ async fn yesterday_cant_tell_gold_from_the_rest(pool: PgPool) {
     dorman_testkit::publish(
         &h.pool,
         day("2026-10-28"),
-        &[gold.knock_key.clone(), plain.knock_key.clone()],
+        &[gold.item_key.clone(), plain.item_key.clone()],
     )
     .await;
     let expected: Vec<String> = items
@@ -1550,21 +1539,21 @@ async fn pair_replies_are_shuffled_and_read_as_letters_everywhere(pool: PgPool) 
     let (_, _, page) = h.get("/", Some(&cookie)).await;
     assert!(shows_card(&page, pair));
     let (at_a, at_b) = (
-        page.find(&format!(r#"value="{}""#, a.knock_key)).unwrap(),
-        page.find(&format!(r#"value="{}""#, b.knock_key)).unwrap(),
+        page.find(&format!(r#"value="{}""#, a.item_key)).unwrap(),
+        page.find(&format!(r#"value="{}""#, b.item_key)).unwrap(),
     );
     assert!(at_a < at_b);
 
     // The live split and the reveal both call them by those letters.
-    let (_, _, body) = h.vote(Some(&cookie), vote_body(pair, &b.knock_key)).await;
+    let (_, _, body) = h.vote(Some(&cookie), vote_body(pair, &b.item_key)).await;
     let body: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(body["split"][0]["label"], "Reply B");
     h.play_all_as(Some(cookie.clone()), &items).await;
     decide(
         &h,
         pair,
-        Some(&b.knock_key),
-        json!({ a.knock_key.clone(): 1.0, b.knock_key.clone(): 2.0, "both_bad": 1.0 }),
+        Some(&b.item_key),
+        json!({ a.item_key.clone(): 1.0, b.item_key.clone(): 2.0, "both_bad": 1.0 }),
     )
     .await;
     h.clock.advance(Duration::days(1));
@@ -1580,7 +1569,7 @@ async fn pair_replies_are_shuffled_and_read_as_letters_everywhere(pool: PgPool) 
     assert!(page.contains("Both bad"));
     for reply in &p.replies {
         assert!(
-            !page.contains(&format!(">{}<", reply.knock_key)),
+            !page.contains(&format!(">{}<", reply.item_key)),
             "a reply's key is shown as text"
         );
     }
@@ -1594,7 +1583,7 @@ async fn yesterday_and_today(h: &Harness) -> (Vec<StoredItem>, Vec<StoredItem>) 
     let keys: Vec<String> = batch
         .items
         .iter()
-        .map(|i| i.knock_key().to_string())
+        .map(|i| i.item_key().to_string())
         .collect();
     let past = dorman_testkit::publish(&h.pool, day("2026-10-26"), &keys[..3]).await;
     let today = dorman_testkit::publish(&h.pool, day(TODAY), &keys[3..]).await;
@@ -1788,7 +1777,7 @@ async fn the_leaderboard_ranks_this_weeks_named_players(pool: PgPool) {
         .map(|n| {
             let mut item = template.clone();
             if let BatchItem::Intent(i) = &mut item {
-                i.knock_key = format!("board-{n}");
+                i.item_key = format!("board-{n}");
                 i.gold_answer = None;
             }
             item
@@ -1799,7 +1788,7 @@ async fn the_leaderboard_ranks_this_weeks_named_players(pool: PgPool) {
     let keys: Vec<String> = batch
         .items
         .iter()
-        .map(|i| i.knock_key().to_string())
+        .map(|i| i.item_key().to_string())
         .collect();
     let items = dorman_testkit::publish(&h.pool, day("2026-10-26"), &keys).await;
     for item in &items {

@@ -5,7 +5,7 @@ import numpy as np
 from dorman_scorer import config
 from dorman_scorer.brigade import brigaded
 from dorman_scorer.config import Config
-from dorman_scorer.consensus import consensus_file, gold_verdicts, verdict
+from dorman_scorer.consensus import gold_verdicts, verdict
 from dorman_scorer.dawid_skene import dawid_skene
 from dorman_scorer.flags import behavior_flags
 from dorman_scorer.model import Item, Vote
@@ -19,10 +19,10 @@ LABELS = ["delivery", "soliciting", "visitation", "unknown"]
 def _item(n: int, gold: str | None = None, **kw) -> Item:
     defaults = dict(
         id=f"item{n}",
-        knock_key=f"k{n}",
+        item_key=f"k{n}",
         mode="intent",
         gold_answer=gold,
-        generator_intent="delivery",
+        intended_intent="delivery",
         first_shown=TODAY,
     )
     defaults.update(kw)
@@ -87,12 +87,6 @@ def test_settles_on_share_and_weight_and_disputes_after_three_days() -> None:
     assert verdict(old, split, trust, TODAY).status == "disputed"
 
 
-def test_crowd_contradicting_a_confident_judge_is_disputed() -> None:
-    item = _item(1, judge_category_correct=9.0)
-    votes = [_vote(f"p{n}", item, "soliciting") for n in range(10)]
-    assert verdict(item, votes, {f"p{n}": 1.0 for n in range(10)}, TODAY).status == "disputed"
-
-
 def test_trolls_stop_mattering() -> None:
     # Regulars who've played 20 gold items; 10 isn't enough trust to settle alone.
     gold = [_item(n, gold="delivery") for n in range(20)]
@@ -123,23 +117,6 @@ def test_pair_answers_map_through_positions() -> None:
     assert v.label == "rd"
 
 
-def test_consensus_file_matches_what_knock_imports() -> None:
-    item = _item(1)
-    v = verdict(item, [_vote("p", item, "delivery")], {"p": 6.0}, TODAY)
-    doc = consensus_file(TODAY, [v])
-    assert doc["format"] == "knock-game-consensus" and doc["version"] == 1
-    assert doc["items"] == [
-        {
-            "knock_key": "k1",
-            "mode": "intent",
-            "status": "settled",
-            "label": "delivery",
-            "share": 1.0,
-            "total_weight": 6.0,
-        }
-    ]
-
-
 def test_same_answer_to_everything_is_flagged() -> None:
     items = [_item(n) for n in range(12)]
     assert behavior_flags([_vote("p", i, "delivery", pos=n % 4) for n, i in enumerate(items)]) == {
@@ -164,11 +141,9 @@ def test_settles_on_a_confident_posterior_with_a_clear_majority() -> None:
     # Dawid-Skene can't settle an item the weight is split on...
     close = [_vote(f"p{n}", item, "delivery" if n < 5 else "soliciting") for n in range(9)]
     assert verdict(item, close, trust, TODAY, posterior=sure).status == "open"
-    # ...nor skip the weight floor or the judge guard.
+    # ...nor skip the weight floor.
     thin = {p: 0.4 for p in trust}
     assert verdict(item, votes, thin, TODAY, posterior=sure).status == "open"
-    judged = _item(1, judge_category_correct=1.0)
-    assert verdict(judged, votes, trust, TODAY, posterior=sure).status == "disputed"
 
 
 def test_thresholds_come_from_config() -> None:

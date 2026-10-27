@@ -1,4 +1,4 @@
-//! `dorman-ingest`: load KNOCK batches and publish daily sets.
+//! `dorman-ingest`: load batches and publish daily sets.
 //!
 //!     dorman-ingest migrate
 //!     dorman-ingest load batch.json
@@ -18,7 +18,7 @@ use dorman_core::{pick_daily_set, Batch, BatchItem, DailyPlan};
 use dorman_db::StoredItem;
 
 #[derive(Parser)]
-#[command(about = "Load KNOCK batches and publish daily sets")]
+#[command(about = "Load batches and publish daily sets")]
 struct Cli {
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
@@ -30,7 +30,7 @@ struct Cli {
 enum Command {
     /// Apply database migrations.
     Migrate,
-    /// Load a batch.json from KNOCK's export_game_batch.py. It starts pending.
+    /// Load a dorman-batch JSON file. It starts pending.
     Load { path: PathBuf },
     /// Print every item in a loaded batch, for a person to skim.
     Review { batch: String },
@@ -151,7 +151,7 @@ fn gold_warning(available: usize, per_day: usize) -> Option<String> {
 }
 
 /// Everything a reviewer needs to skim a batch: each item as a player would
-/// see it, plus what KNOCK thinks the answer is.
+/// see it, plus the gold answer, if there is one.
 fn review(batch: &str, status: &str, items: &[StoredItem]) -> String {
     let mut out = format!("Batch {batch}: {} items, {status}.\n", items.len());
     for (n, stored) in items.iter().enumerate() {
@@ -160,41 +160,30 @@ fn review(batch: &str, status: &str, items: &[StoredItem]) -> String {
                 "intent",
                 &i.text,
                 &i.scene,
-                &i.generator_intent,
+                &i.intended_intent,
                 &i.gold_answer,
             ),
             BatchItem::Pair(p) => (
                 "pair",
                 &p.text,
                 &p.scene,
-                &p.generator_intent,
+                &p.intended_intent,
                 &p.gold_answer,
             ),
         };
-        out += &format!(
-            "\n[{}/{}] {mode} {}\n",
-            n + 1,
-            items.len(),
-            stored.knock_key
-        );
+        out += &format!("\n[{}/{}] {mode} {}\n", n + 1, items.len(), stored.item_key);
         out += &format!("  visitor: \u{201c}{text}\u{201d}\n");
         if let Some(scene) = scene {
             out += &format!("  scene:   {scene}\n");
         }
         out += &format!("  intent:  {generator}\n");
         match &stored.item {
-            BatchItem::Intent(item) => {
+            BatchItem::Intent(_) => {
                 out += &format!("  options: {}\n", stored.options.join(", "));
-                if item.judge.as_ref().is_some_and(|j| j.safety_veto) {
-                    out += "  !! the judges vetoed this line on safety\n";
-                }
             }
             BatchItem::Pair(pair) => {
                 for (reply, letter) in pair.replies.iter().zip(["A", "B"]) {
                     out += &format!("  reply {letter}: \u{201c}{}\u{201d}\n", reply.text);
-                    if reply.judge.as_ref().is_some_and(|j| j.safety_veto) {
-                        out += &format!("  !! the judges vetoed reply {letter} on safety\n");
-                    }
                 }
             }
         }
@@ -227,7 +216,7 @@ mod tests {
             .iter()
             .map(|item| StoredItem {
                 id: uuid::Uuid::nil(),
-                knock_key: item.knock_key().into(),
+                item_key: item.item_key().into(),
                 item: item.clone(),
                 options: Vec::new(),
             })
@@ -239,7 +228,7 @@ mod tests {
             items.len()
         )));
         for item in &batch.items {
-            assert!(text.contains(item.knock_key()));
+            assert!(text.contains(item.item_key()));
             let line = match item {
                 BatchItem::Intent(i) => &i.text,
                 BatchItem::Pair(p) => &p.text,

@@ -46,7 +46,7 @@ pub fn seeded_shuffle<T: AsRef<str>>(seed: &str, mut values: Vec<T>) -> Vec<T> {
     values
 }
 
-/// The knock_keys for one day's set, gold mixed in so it can't be told apart.
+/// The item_keys for one day's set, gold mixed in so it can't be told apart.
 ///
 /// `carry_over` should already be sorted most-disputed first. A pool that's
 /// short is topped up from `new` so the set stays full when there's enough
@@ -70,14 +70,14 @@ pub fn pick_daily_set(
 /// The four choices shown for an intent item: the generator's label, the
 /// gold answer when it differs, and plausible distractors, in a fixed order.
 pub fn intent_options(
-    knock_key: &str,
-    generator_intent: &str,
+    item_key: &str,
+    intended_intent: &str,
     gold_answer: Option<&str>,
     intents: &[String],
     count: usize,
 ) -> Vec<String> {
-    let mut options = vec![generator_intent.to_string()];
-    if let Some(gold) = gold_answer.filter(|gold| *gold != generator_intent) {
+    let mut options = vec![intended_intent.to_string()];
+    if let Some(gold) = gold_answer.filter(|gold| *gold != intended_intent) {
         options.push(gold.to_string());
     }
     let distractors = intents
@@ -86,12 +86,12 @@ pub fn intent_options(
         .collect();
     let wanted = count.saturating_sub(options.len());
     options.extend(
-        seeded_shuffle(knock_key, distractors)
+        seeded_shuffle(item_key, distractors)
             .into_iter()
             .take(wanted)
             .cloned(),
     );
-    seeded_shuffle(knock_key, options)
+    seeded_shuffle(item_key, options)
 }
 
 #[cfg(test)]

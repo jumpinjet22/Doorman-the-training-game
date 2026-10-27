@@ -23,13 +23,11 @@ class Vote:
 @dataclass(frozen=True)
 class Item:
     id: str
-    knock_key: str
+    item_key: str
     mode: str  # "intent" | "pair"
     gold_answer: str | None
-    generator_intent: str
-    # KNOCK's judge average for "is the generator's category right" (0-10).
-    judge_category_correct: float | None = None
-    # Pair items only: the two reply knock_keys, in display order.
+    intended_intent: str
+    # Pair items only: the two reply item_keys, in display order.
     reply_keys: tuple[str, ...] = ()
     first_shown: date | None = None
 
