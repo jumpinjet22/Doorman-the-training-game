@@ -58,6 +58,12 @@ cd scorer && pip install -e ".[dev]" && python -m dorman_scorer --out-dir export
 A loaded batch is `pending` until someone runs `approve`; only approved
 batches feed daily sets.
 
+A batch item may carry an optional `explanation` (up to 400 characters). It is
+shown only after a player has voted, so it never reaches an unanswered card.
+Players may also say how sure they are (`unsure`, `fairly`, `certain`); that
+is stored on the vote and summarised on their results page, and the scorer
+ignores it.
+
 `dorman-api` settings, as environment variables:
 
 | Variable | Default | What |

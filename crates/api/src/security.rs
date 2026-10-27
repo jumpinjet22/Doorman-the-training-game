@@ -17,7 +17,7 @@ use crate::AppState;
 pub const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; \
     script-src 'self' https://challenges.cloudflare.com; \
     frame-src https://challenges.cloudflare.com; \
-    style-src 'self'; img-src 'self'; connect-src 'self'; \
+    style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'self'; \
     base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 /// Two years. No `preload`: that's a commitment to make once the domain is settled.
 pub const STRICT_TRANSPORT_SECURITY: &str = "max-age=63072000; includeSubDomains";

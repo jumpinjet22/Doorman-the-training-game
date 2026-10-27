@@ -152,8 +152,28 @@ async fn play_css() -> impl IntoResponse {
     )
 }
 
+/// Brand assets are immutable files; cache them for a day.
+fn asset(content_type: &'static str, body: &'static [u8]) -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        body,
+    )
+}
+
+macro_rules! asset_route {
+    ($router:expr, $path:literal, $type:literal, $file:literal) => {
+        $router.route(
+            $path,
+            get(|| async { asset($type, include_bytes!(concat!("../static/", $file))) }),
+        )
+    };
+}
+
 pub fn app(state: AppState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/", get(pages::play))
         .route("/results", get(pages::results))
         .route("/yesterday", get(pages::yesterday))
@@ -165,7 +185,56 @@ pub fn app(state: AppState) -> Router {
         .route("/api/vote", post(voting::vote_json))
         .route("/static/play.js", get(play_js))
         .route("/static/play.css", get(play_css))
-        .route("/healthz", get(|| async { "ok" }))
+        .route("/healthz", get(|| async { "ok" }));
+    let router = asset_route!(
+        router,
+        "/static/brand/favicon.svg",
+        "image/svg+xml",
+        "brand/favicon.svg"
+    );
+    let router = asset_route!(
+        router,
+        "/static/brand/knock-mark-light.svg",
+        "image/svg+xml",
+        "brand/knock-mark-light.svg"
+    );
+    let router = asset_route!(
+        router,
+        "/static/brand/knock-mark-dark.svg",
+        "image/svg+xml",
+        "brand/knock-mark-dark.svg"
+    );
+    let router = asset_route!(
+        router,
+        "/static/fonts/big-shoulders-display-700.woff2",
+        "font/woff2",
+        "fonts/big-shoulders-display-latin-700-normal.woff2"
+    );
+    let router = asset_route!(
+        router,
+        "/static/fonts/big-shoulders-display-900.woff2",
+        "font/woff2",
+        "fonts/big-shoulders-display-latin-900-normal.woff2"
+    );
+    let router = asset_route!(
+        router,
+        "/static/fonts/ibm-plex-sans-400.woff2",
+        "font/woff2",
+        "fonts/ibm-plex-sans-latin-400-normal.woff2"
+    );
+    let router = asset_route!(
+        router,
+        "/static/fonts/ibm-plex-sans-500.woff2",
+        "font/woff2",
+        "fonts/ibm-plex-sans-latin-500-normal.woff2"
+    );
+    let router = asset_route!(
+        router,
+        "/static/fonts/ibm-plex-sans-600.woff2",
+        "font/woff2",
+        "fonts/ibm-plex-sans-latin-600-normal.woff2"
+    );
+    router
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(middleware::from_fn_with_state(
             state.clone(),

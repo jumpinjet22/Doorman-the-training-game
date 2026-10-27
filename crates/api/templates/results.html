@@ -16,7 +16,11 @@
 <section aria-labelledby="more-heading">
   <h2 id="more-heading">Keep going</h2>
   <p><a class="overtime" href="/overtime">Play Overtime</a>: more cards from earlier days, for as long as you like.</p>
-  {% if let Some(rank) = rank %}<p>Your rank: <strong>{{ rank }}</strong>. Ranks go up with accurate answers over more days, never with how many you give.</p>{% endif %}
+  {% if let Some(p) = progress %}
+  <p>Your rank: <strong>{{ p.rank }}</strong>{% if let Some(a) = p.accuracy %} &middot; {{ a }}{% endif %}.</p>
+  {% if let Some(next) = p.next %}<p>Next up &mdash; {{ next }}.</p>{% endif %}
+  <p class="hint">Ranks go up with accurate answers over more days, never with how many you give.</p>
+  {% endif %}
   {% match handle %}
   {% when Some with (name) %}
   <p>You're <strong>{{ name }}</strong> on the <a href="/leaderboard">weekly leaderboard</a>.</p>
@@ -28,14 +32,29 @@
   </form>
   {% endmatch %}
 </section>
+{% if !sure.is_empty() %}
+<section aria-labelledby="sure-heading">
+  <h2 id="sure-heading">How sure you were</h2>
+  <table class="board">
+    <thead><tr><th scope="col">You said</th><th scope="col">Right</th><th scope="col">Close</th><th scope="col">Wrong</th><th scope="col">Waiting</th></tr></thead>
+    <tbody>
+      {% for row in sure %}
+      <tr><th scope="row">{{ row.label }}</th><td>{{ row.right }}</td><td>{{ row.close }}</td><td>{{ row.wrong }}</td><td>{{ row.pending }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="hint">Scored against the crowd's settled answers once tonight's counting is done. If your &ldquo;Certain&rdquo; answers are mostly right, your confidence is well placed.</p>
+</section>
+{% endif %}
 <h2>Your answers</h2>
 <ol class="results">
   {% for row in rows %}
   <li class="result">
     <p class="prompt">{{ row.item.prompt }}</p>
     {% call m::scene(row.item) %}{% endcall %}
-    <p>You said: <strong>{{ row.mine }}</strong></p>
+    <p>You said: <strong>{{ row.mine }}</strong>{% if let Some(sure) = row.sure %} <span class="you">({{ sure }})</span>{% endif %}</p>
     {% call m::bars(row.bars) %}{% endcall %}
+    {% call m::explanation(row.item) %}{% endcall %}
   </li>
   {% endfor %}
 </ol>

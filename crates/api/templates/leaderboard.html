@@ -3,17 +3,20 @@
 {% block main %}
 <h1>This week's leaderboard</h1>
 <p class="day">Week of <time datetime="{{ week_of }}">{{ week_of }}</time></p>
-<p class="hint">Ranked by how often your daily answers matched what the crowd settled on. You need {{ minimum }} settled answers this week to appear, and a name, which you can pick after finishing a day.</p>
-{% if rows.is_empty() %}
+<p class="hint">Ranked by how often your daily answers matched what the crowd settled on, and only against players of your own rank, so you're measured against your peers. You need {{ minimum }} settled answers this week to appear, and a name, which you can pick after finishing a day.</p>
+{% if tiers.is_empty() %}
 <p>Nobody's qualified yet this week.</p>
 {% else %}
+{% for tier in tiers %}
+<h2>{{ tier.rank }}</h2>
 <table class="board">
   <thead><tr><th scope="col">#</th><th scope="col">Name</th><th scope="col">Right</th><th scope="col">Answers</th></tr></thead>
   <tbody>
-    {% for row in rows %}
+    {% for row in tier.rows %}
     <tr><td>{{ row.place }}</td><td>{{ row.handle }}</td><td>{{ row.percent }}%</td><td>{{ row.scored }}</td></tr>
     {% endfor %}
   </tbody>
 </table>
+{% endfor %}
 {% endif %}
 {% endblock %}

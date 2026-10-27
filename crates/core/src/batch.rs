@@ -10,6 +10,12 @@ pub const BATCH_FORMAT: &str = "knock-game-batch";
 pub const BATCH_VERSION: u32 = 1;
 /// A pair item's answer when neither reply is any good.
 pub const BOTH_BAD: &str = "both_bad";
+/// The longest explanation an item may carry.
+pub const MAX_EXPLANATION_CHARS: usize = 400;
+/// Gold items must look like any other, so a batch whose explanations are
+/// much commoner on one kind than the other is refused: players could tell
+/// which cards have a known answer just by seeing one.
+pub const MAX_EXPLANATION_COVERAGE_GAP: f64 = 0.25;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Batch {
@@ -35,6 +41,9 @@ pub struct IntentItem {
     pub generator_intent: String,
     pub gold_answer: Option<String>,
     pub judge: Option<Judge>,
+    /// Why the answer is what it is; shown only after a player has voted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,6 +54,9 @@ pub struct PairItem {
     pub generator_intent: String,
     pub gold_answer: Option<String>,
     pub replies: Vec<Reply>,
+    /// Why the answer is what it is; shown only after a player has voted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -97,6 +109,13 @@ impl BatchItem {
         }
     }
 
+    pub fn explanation(&self) -> Option<&str> {
+        match self {
+            BatchItem::Intent(item) => item.explanation.as_deref(),
+            BatchItem::Pair(item) => item.explanation.as_deref(),
+        }
+    }
+
     /// Whether `answer` is something a player could legitimately submit for
     /// this item. Intent options are checked separately, against the options
     /// the player was actually shown.
@@ -111,6 +130,27 @@ impl BatchItem {
 }
 
 impl Batch {
+    fn check_explanations_dont_reveal_gold(&self) -> Result<(), BatchError> {
+        let share = |gold: bool| {
+            let group: Vec<&BatchItem> = self
+                .items
+                .iter()
+                .filter(|item| item.gold_answer().is_some() == gold)
+                .collect();
+            let explained = group.iter().filter(|i| i.explanation().is_some()).count();
+            (!group.is_empty()).then(|| explained as f64 / group.len() as f64)
+        };
+        if let (Some(gold), Some(other)) = (share(true), share(false)) {
+            if (gold - other).abs() > MAX_EXPLANATION_COVERAGE_GAP {
+                return Err(BatchError::Item(
+                    "(batch)".to_string(),
+                    "explanations are much more common on known-answer items than on others (or the reverse), which would reveal which cards are gold".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn parse(json: &str) -> Result<Self, BatchError> {
         let batch: Batch = serde_json::from_str(json)?;
         batch.validate()?;
@@ -121,6 +161,7 @@ impl Batch {
         if self.format != BATCH_FORMAT || self.version != BATCH_VERSION {
             return Err(BatchError::Format(self.format.clone(), self.version));
         }
+        self.check_explanations_dont_reveal_gold()?;
         let known = |intent: &str| self.intents.iter().any(|known| known == intent);
         let mut seen = HashSet::new();
         for item in &self.items {
@@ -128,6 +169,12 @@ impl Batch {
             let bad = |why: &str| Err(BatchError::Item(key.to_string(), why.to_string()));
             if !seen.insert(key) {
                 return bad("duplicate knock_key");
+            }
+            if item
+                .explanation()
+                .is_some_and(|text| text.chars().count() > MAX_EXPLANATION_CHARS)
+            {
+                return bad("explanation is too long");
             }
             match item {
                 BatchItem::Intent(intent) => {
@@ -173,6 +220,44 @@ mod tests {
         assert_eq!(batch.batch, "example-1");
         assert!(batch.items.iter().any(|item| item.mode() == "pair"));
         assert!(batch.items.iter().any(|item| item.gold_answer().is_some()));
+    }
+
+    #[test]
+    fn explanations_that_single_out_gold_items_are_refused() {
+        let mut batch = Batch::parse(EXAMPLE).unwrap();
+        for item in &mut batch.items {
+            let keep = item.gold_answer().is_some();
+            let text = keep.then(|| "why".to_string());
+            match item {
+                BatchItem::Intent(i) => i.explanation = text,
+                BatchItem::Pair(p) => p.explanation = text,
+            }
+        }
+        let json = serde_json::to_string(&batch).unwrap();
+        let err = Batch::parse(&json).unwrap_err().to_string();
+        assert!(err.contains("reveal which cards are gold"), "{err}");
+
+        // The reverse is just as telling.
+        for item in &mut batch.items {
+            let text = item.gold_answer().is_none().then(|| "why".to_string());
+            match item {
+                BatchItem::Intent(i) => i.explanation = text,
+                BatchItem::Pair(p) => p.explanation = text,
+            }
+        }
+        assert!(Batch::parse(&serde_json::to_string(&batch).unwrap()).is_err());
+    }
+
+    #[test]
+    fn an_overlong_explanation_is_refused() {
+        let mut batch = Batch::parse(EXAMPLE).unwrap();
+        for item in &mut batch.items {
+            match item {
+                BatchItem::Intent(i) => i.explanation = Some("x".repeat(MAX_EXPLANATION_CHARS + 1)),
+                BatchItem::Pair(p) => p.explanation = Some("x".repeat(MAX_EXPLANATION_CHARS + 1)),
+            }
+        }
+        assert!(Batch::parse(&serde_json::to_string(&batch).unwrap()).is_err());
     }
 
     #[test]

@@ -20,6 +20,9 @@ pub struct PublicItem {
     pub scene: Option<String>,
     pub choices: Vec<Choice>,
     pub answered: Option<String>,
+    /// Why the answer is what it is. Set only once the item is answered, so
+    /// an unanswered card can never carry it.
+    pub explanation: Option<String>,
 }
 
 /// The day at the top of every game page: "Day 12 · 2026-10-27".
@@ -96,7 +99,18 @@ pub struct EmptyPage {
 pub struct ResultRow {
     pub item: PublicItem,
     pub mine: String,
+    /// How sure they said they were, in words.
+    pub sure: Option<&'static str>,
     pub bars: Vec<Bar>,
+}
+
+/// One line of the "how sure you were" table.
+pub struct SureRow {
+    pub label: &'static str,
+    pub right: u32,
+    pub close: u32,
+    pub wrong: u32,
+    pub pending: u32,
 }
 
 #[derive(Template)]
@@ -106,12 +120,13 @@ pub struct ResultsPage {
     pub rows: Vec<ResultRow>,
     pub card: String,
     pub streak: u32,
-    /// The player's rank's name.
-    pub rank: Option<&'static str>,
     /// Their leaderboard name, if they've picked one.
     pub handle: Option<String>,
     /// Whether any square is still waiting for the night's scoring.
     pub pending: bool,
+    /// Confidence against outcome; empty if they never said how sure they were.
+    pub sure: Vec<SureRow>,
+    pub progress: Option<Progress>,
 }
 
 pub struct RevealRow {
@@ -148,6 +163,21 @@ pub struct MessagePage {
     pub link: (&'static str, &'static str),
 }
 
+/// One rank's board: players are compared with others of their own rank.
+pub struct Tier {
+    pub rank: &'static str,
+    pub rows: Vec<BoardRow>,
+}
+
+/// Where a player stands, in words.
+pub struct Progress {
+    pub rank: &'static str,
+    /// "72% of 31 settled answers", or None before any have settled.
+    pub accuracy: Option<String>,
+    /// What the next rank needs, e.g. "Bouncer: 4 more days and 75% accuracy".
+    pub next: Option<String>,
+}
+
 pub struct BoardRow {
     pub place: usize,
     pub handle: String,
@@ -160,7 +190,7 @@ pub struct BoardRow {
 pub struct LeaderboardPage {
     pub week_of: String,
     pub minimum: u32,
-    pub rows: Vec<BoardRow>,
+    pub tiers: Vec<Tier>,
 }
 
 #[derive(Template)]
@@ -235,6 +265,11 @@ pub fn reply_order(pair: &PairItem) -> Vec<&Reply> {
         .collect()
 }
 
+fn explanation(stored: &StoredItem, answered: &Option<String>) -> Option<String> {
+    answered.as_ref()?;
+    stored.item.explanation().map(str::to_string)
+}
+
 impl PublicItem {
     pub fn from_stored(stored: &StoredItem, answered: Option<String>) -> Self {
         match &stored.item {
@@ -251,6 +286,7 @@ impl PublicItem {
                         label: intent_label(o),
                     })
                     .collect(),
+                explanation: explanation(stored, &answered),
                 answered,
             },
             BatchItem::Pair(item) => {
@@ -272,6 +308,7 @@ impl PublicItem {
                     text: item.text.clone(),
                     scene: item.scene.clone(),
                     choices,
+                    explanation: explanation(stored, &answered),
                     answered,
                 }
             }

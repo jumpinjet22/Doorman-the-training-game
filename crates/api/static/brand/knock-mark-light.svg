@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="KNOCK mark">
+  <title>KNOCK mark</title>
+  <path d="M18 8 L18 56" stroke="#10161D" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <path d="M18 31 L47 8" stroke="#10161D" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <path d="M18 34 L47 58" stroke="#10161D" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <circle cx="36.5" cy="33" r="6.6" fill="#E8A33D"/>
+  <circle cx="34" cy="30.4" r="1.7" fill="#FFFFFF" opacity="0.9"/>
+</svg>

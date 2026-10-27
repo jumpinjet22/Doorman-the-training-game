@@ -64,6 +64,37 @@ pub fn rank(record: Record) -> Rank {
         .map_or(Rank::Rookie, |(rank, _, _)| *rank)
 }
 
+/// What a player still needs for the next rank up.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NextRank {
+    pub rank: Rank,
+    /// More days to play (0 if they have enough).
+    pub days_to_go: u32,
+    /// The accuracy to reach, as a whole percent.
+    pub accuracy_percent: u32,
+    /// Whether their accuracy is already there (once enough answers have settled).
+    pub accuracy_met: bool,
+    /// More settled answers needed before accuracy can be judged at all.
+    pub answers_to_go: u32,
+}
+
+/// The next rank up from `record`'s, or None for the top rank.
+pub fn next_rank(record: Record) -> Option<NextRank> {
+    let current = rank(record);
+    let (target, days, accuracy) = THRESHOLDS
+        .iter()
+        .rev()
+        .find(|(r, _, _)| *r > current)
+        .copied()?;
+    Some(NextRank {
+        rank: target,
+        days_to_go: days.saturating_sub(record.days),
+        accuracy_percent: (accuracy * 100.0).round() as u32,
+        accuracy_met: record.scored >= MIN_SCORED && record.accuracy() >= accuracy,
+        answers_to_go: MIN_SCORED.saturating_sub(record.scored),
+    })
+}
+
 /// One player's week, as the leaderboard sees it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Standing {
@@ -106,6 +137,24 @@ mod tests {
             scored,
             right,
         }
+    }
+
+    #[test]
+    fn the_next_rank_says_what_is_missing() {
+        let next = next_rank(record(1, 4, 4)).unwrap();
+        assert_eq!(next.rank, Rank::Doorman);
+        assert_eq!((next.days_to_go, next.answers_to_go), (2, 6));
+        assert_eq!(next.accuracy_percent, 60);
+
+        let next = next_rank(record(3, 20, 12)).unwrap();
+        assert_eq!(next.rank, Rank::Bouncer, "a Doorman looks to Bouncer");
+        assert_eq!((next.days_to_go, next.answers_to_go), (11, 0));
+        assert!(!next.accuracy_met, "60% is short of 75%");
+
+        let next = next_rank(record(30, 20, 15)).unwrap();
+        assert_eq!(next.rank, Rank::HeadOfSecurity);
+        assert!(!next.accuracy_met);
+        assert_eq!(next_rank(record(30, 20, 18)), None, "nothing above the top");
     }
 
     #[test]

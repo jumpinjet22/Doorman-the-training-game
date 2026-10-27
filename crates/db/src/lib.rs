@@ -260,6 +260,52 @@ pub async fn record_vote(
     Ok(result.rows_affected() == 1)
 }
 
+/// `record_vote`, plus how sure the player said they were
+/// (`unsure`, `fairly` or `certain`).
+pub async fn record_vote_with_confidence(
+    pool: &PgPool,
+    player_id: Uuid,
+    item_id: Uuid,
+    day: Option<NaiveDate>,
+    answer: &str,
+    ms_to_answer: i32,
+    confidence: Option<&str>,
+) -> Result<bool, Error> {
+    let result = sqlx::query(
+        "INSERT INTO votes (player_id, item_id, day, answer, ms_to_answer, confidence)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (player_id, item_id) DO NOTHING",
+    )
+    .bind(player_id)
+    .bind(item_id)
+    .bind(day)
+    .bind(answer)
+    .bind(ms_to_answer)
+    .bind(confidence)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// How sure the player said they were, for the items where they said.
+pub async fn player_confidences(
+    pool: &PgPool,
+    player_id: Uuid,
+    item_ids: &[Uuid],
+) -> Result<Vec<(Uuid, String)>, Error> {
+    let rows = sqlx::query(
+        "SELECT item_id, confidence FROM votes
+         WHERE player_id = $1 AND item_id = ANY ($2) AND confidence IS NOT NULL",
+    )
+    .bind(player_id)
+    .bind(item_ids)
+    .fetch_all(pool)
+    .await?;
+    rows.iter()
+        .map(|row| Ok((row.try_get("item_id")?, row.try_get("confidence")?)))
+        .collect()
+}
+
 /// The player's answers so far, keyed by item.
 pub async fn player_answers(
     pool: &PgPool,
@@ -595,6 +641,34 @@ pub async fn weekly_standings(
                 row.try_get("scored")?,
                 row.try_get("right_answers")?,
                 row.try_get("flagged")?,
+            ))
+        })
+        .collect()
+}
+
+/// (handle, days played, settled answers, matching answers) for every player
+/// with a handle: what the board needs to put each one in a rank tier.
+pub async fn handle_records(pool: &PgPool) -> Result<Vec<(String, i64, i64, i64)>, Error> {
+    let rows = sqlx::query(
+        "SELECT p.handle,
+                (SELECT count(*) FROM player_days d WHERE d.player_id = p.id AND d.completed) AS days,
+                count(c.item_id) AS scored,
+                count(c.item_id) FILTER (WHERE v.answer = c.label) AS right_answers
+         FROM players p
+         LEFT JOIN votes v ON v.player_id = p.id
+         LEFT JOIN consensus c ON c.item_id = v.item_id AND c.status = 'settled' AND c.label IS NOT NULL
+         WHERE p.handle IS NOT NULL
+         GROUP BY p.id",
+    )
+    .fetch_all(pool)
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok((
+                row.try_get("handle")?,
+                row.try_get("days")?,
+                row.try_get("scored")?,
+                row.try_get("right_answers")?,
             ))
         })
         .collect()

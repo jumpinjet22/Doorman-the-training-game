@@ -56,15 +56,20 @@ document.querySelectorAll("form.vote").forEach((form) => {
   const box = card.querySelector(".split");
   const next = card.querySelector(".next");
   const buttons = form.querySelectorAll("button");
+  const sure = form.querySelector("fieldset.sure");
+  const why = card.querySelector(".explanation");
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = event.submitter;
+    const confidence = form.querySelector('[name="confidence"]:checked')?.value;
     buttons.forEach((b) => (b.disabled = true));
+    if (sure) sure.disabled = true;
     button.classList.add("mine");
     box.textContent = "Saving…";
     const fail = (message) => {
       box.textContent = message;
       buttons.forEach((b) => (b.disabled = false));
+      if (sure) sure.disabled = false;
       button.classList.remove("mine");
       button.focus();
       window.turnstile?.reset();
@@ -78,6 +83,7 @@ document.querySelectorAll("form.vote").forEach((form) => {
           overtime: Boolean(form.elements.overtime),
           item_id: form.elements.item_id.value,
           answer: button.value,
+          confidence,
           ms_to_answer: Math.round(performance.now() - shownAt),
           turnstile_token: await freshToken(form),
         }),
@@ -87,8 +93,14 @@ document.querySelectorAll("form.vote").forEach((form) => {
       return;
     }
     if (!res.ok) { fail(MESSAGES[res.status] ?? "Couldn't save that one."); return; }
-    const { remaining, split } = await res.json();
+    const { remaining, split, explanation } = await res.json();
     renderBars(box, split, button.value);
+    if (why && explanation) {
+      const lead = document.createElement("strong");
+      lead.textContent = "Why:";
+      why.replaceChildren(lead, " " + explanation);
+      why.hidden = false;
+    }
     // Overtime has no end to count down to; its link stays as it is.
     if (remaining !== null) next.textContent = remaining === 0 ? "See your results" : "Next card";
     next.hidden = false;
