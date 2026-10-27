@@ -116,6 +116,17 @@ def test_load_reads_items_votes_and_positions(db_url: str) -> None:
     positions = {v.answer: v.position for v in votes}
     assert positions == {"both_bad": 2, intent["generator_intent"]: 0}
     assert all(timedelta(days=29) < v.account_age < timedelta(days=31) for v in votes)
+    assert all(v.daily for v in votes)
+
+
+def test_overtime_votes_load_as_not_daily(db_url: str) -> None:
+    with psycopg.connect(db_url) as conn:
+        ids = _seed(conn)
+        intent = next(i for i in BATCH["items"] if i["mode"] == "intent")
+        player = _player(conn, [(ids[intent["knock_key"]], intent["generator_intent"])])
+        conn.execute("UPDATE votes SET day = NULL WHERE player_id = %s", (player,))
+        _, votes = db.load(conn)
+    assert [v.daily for v in votes] == [False]
 
 
 def test_main_saves_trust_and_consensus_and_writes_the_export(db_url, tmp_path) -> None:

@@ -40,14 +40,14 @@ def load(conn: psycopg.Connection) -> tuple[list[Item], list[Vote]]:
         options[item_id] = choices
 
     votes = []
-    for player_id, item_id, answer, ms, age in conn.execute(
+    for player_id, item_id, answer, ms, age, daily in conn.execute(
         """SELECT v.player_id::text, v.item_id::text, v.answer, v.ms_to_answer,
-                  v.created_at - p.created_at
+                  v.created_at - p.created_at, v.day IS NOT NULL
            FROM votes v JOIN players p ON p.id = v.player_id"""
     ):
         choices = options.get(item_id, [])
         position = choices.index(answer) if answer in choices else None
-        votes.append(Vote(player_id, item_id, answer, ms, position, age))
+        votes.append(Vote(player_id, item_id, answer, ms, position, age, daily))
     return items, votes
 
 

@@ -15,6 +15,9 @@ class Vote:
     # How old the player's account was when they cast this vote (None if
     # unknown, which counts as established).
     account_age: timedelta | None = None
+    # False for Overtime answers, which belong to no day. Only daily answers
+    # earn trust on gold: Overtime serves past gold with its live split.
+    daily: bool = True
 
 
 @dataclass(frozen=True)

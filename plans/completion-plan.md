@@ -203,6 +203,12 @@ What a player sees on a normal day.
   never on volume.
 - **Weekly leaderboard:** players with a handle only. Ranked by accuracy
   against settled consensus, with a minimum number of answers to qualify.
+- **Gold can't be told apart:** the scorer writes gold a settled row like any
+  other item (never exported), gold retires after 5 daily sets, and gold
+  answered in Overtime earns no trust. Yesterday's reveal lists yesterday's
+  set minus anything back today, and by design shows how the crowd answered
+  only for items the viewer answered themselves, so skipping a day to read
+  its answers can't be used to earn trust when those items come round again.
 
 **Tests:**
 - Overtime never serves an item that's in today's daily set (otherwise it

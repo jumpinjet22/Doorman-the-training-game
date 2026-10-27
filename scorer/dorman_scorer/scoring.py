@@ -37,7 +37,9 @@ def score(
 
     gold_trusts: dict[str, float] = {}
     for player, mine in by_player.items():
-        gold_votes = [v for v in mine if by_id[v.item_id].gold_answer is not None]
+        # Dailies calibrate people; Overtime farms data. Gold answered in
+        # Overtime earns no trust.
+        gold_votes = [v for v in mine if v.daily and by_id[v.item_id].gold_answer is not None]
         right = sum(1 for v in gold_votes if v.answer == by_id[v.item_id].gold_answer)
         gold_trusts[player] = gold_trust(right, len(gold_votes))
 
