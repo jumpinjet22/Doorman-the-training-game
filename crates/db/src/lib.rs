@@ -506,7 +506,11 @@ pub async fn results_out(pool: &PgPool, day: NaiveDate) -> Result<bool, Error> {
 
 /// Those of `item_ids` in a set for `from` or any later day: still in play,
 /// so nothing about how they were answered may be shown yet.
-pub async fn in_play(pool: &PgPool, item_ids: &[Uuid], from: NaiveDate) -> Result<Vec<Uuid>, Error> {
+pub async fn in_play(
+    pool: &PgPool,
+    item_ids: &[Uuid],
+    from: NaiveDate,
+) -> Result<Vec<Uuid>, Error> {
     sqlx::query_scalar(
         "SELECT DISTINCT k.id FROM daily_sets d, unnest(d.item_ids) AS k(id)
          WHERE d.day >= $2 AND k.id = ANY ($1)

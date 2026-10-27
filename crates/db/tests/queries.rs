@@ -809,7 +809,9 @@ async fn gold_that_misses_a_day_never_comes_back(pool: PgPool) {
     publish(&pool, day("2026-10-01"), &[a.clone(), b.clone()]).await;
     publish(&pool, day("2026-10-02"), &[a.clone(), plain.clone()]).await;
 
-    let pools = dorman_db::daily_pools(&pool, day("2026-10-02")).await.unwrap();
+    let pools = dorman_db::daily_pools(&pool, day("2026-10-02"))
+        .await
+        .unwrap();
     assert!(pools.gold.contains(a), "running on, with showings left");
     assert!(
         !pools.gold.contains(b),
@@ -832,7 +834,10 @@ async fn records_wait_until_an_item_is_out_of_play(pool: PgPool) {
     let player = dorman_testkit::player_with_votes(
         &pool,
         day("2026-10-27"),
-        &[(item.id, answer.as_str()), (other.id, valid_answer(other).as_str())],
+        &[
+            (item.id, answer.as_str()),
+            (other.id, valid_answer(other).as_str()),
+        ],
     )
     .await;
     for i in [item, other] {
@@ -855,7 +860,12 @@ async fn records_wait_until_an_item_is_out_of_play(pool: PgPool) {
     .await
     .unwrap();
     // `item` is back in the 28th's set: it doesn't count yet.
-    publish(&pool, day("2026-10-28"), std::slice::from_ref(&item.knock_key)).await;
+    publish(
+        &pool,
+        day("2026-10-28"),
+        std::slice::from_ref(&item.knock_key),
+    )
+    .await;
     assert_eq!(
         dorman_db::player_record(&pool, player).await.unwrap(),
         (0, 1, 1)
@@ -885,14 +895,22 @@ async fn records_wait_until_an_item_is_out_of_play(pool: PgPool) {
 async fn rate_limit_hits_can_be_read_without_counting_one(pool: PgPool) {
     let start = Utc::now();
     assert_eq!(
-        dorman_db::rate_limit_hits(&pool, "s", b"k", start).await.unwrap(),
+        dorman_db::rate_limit_hits(&pool, "s", b"k", start)
+            .await
+            .unwrap(),
         0
     );
-    dorman_db::hit_rate_limit(&pool, "s", b"k", start).await.unwrap();
-    dorman_db::hit_rate_limit(&pool, "s", b"k", start).await.unwrap();
+    dorman_db::hit_rate_limit(&pool, "s", b"k", start)
+        .await
+        .unwrap();
+    dorman_db::hit_rate_limit(&pool, "s", b"k", start)
+        .await
+        .unwrap();
     for _ in 0..2 {
         assert_eq!(
-            dorman_db::rate_limit_hits(&pool, "s", b"k", start).await.unwrap(),
+            dorman_db::rate_limit_hits(&pool, "s", b"k", start)
+                .await
+                .unwrap(),
             2
         );
     }

@@ -181,7 +181,8 @@ def test_the_next_morning_the_card_fills_in_and_the_streak_is_two(
     assert _card_text(page) == f"🚪 #{number}  {'⬜' * total}"
 
     # The night run, then the next morning, before the next set goes up
-    # (anything back in it would stay hidden).
+    # (anything back in it would stay hidden). This checks the card fills in,
+    # not settling thresholds, so the run's bar is low enough for one player.
     _run_scorer(dorman, second, tmp_path)
     dorman.set_clock(f"{second}T08:00:00Z")
     page.goto("/yesterday")

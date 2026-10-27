@@ -157,9 +157,13 @@ fn network_of(state: &AppState, ip: &ClientIp) -> Vec<u8> {
 async fn network_full(state: &AppState, network: &[u8]) -> Result<Option<Refusal>, AppError> {
     let now = state.clock.now();
     let window = Duration::hours(1);
-    let hits =
-        dorman_db::rate_limit_hits(&state.pool, "new_player", network, window_start(now, window))
-            .await?;
+    let hits = dorman_db::rate_limit_hits(
+        &state.pool,
+        "new_player",
+        network,
+        window_start(now, window),
+    )
+    .await?;
     Ok((hits >= state.limits.new_players_per_hour).then(|| {
         Refusal::too_many(
             seconds_left(now, window),
@@ -325,7 +329,14 @@ async fn cast(
         (None, network) => {
             let (player, jar) = create_player(state, jar, &network.unwrap_or_default()).await?;
             // A new player's first vote opens their window like any other.
-            over_limit(state, "vote", player.as_bytes(), Duration::minutes(1), limit).await?;
+            over_limit(
+                state,
+                "vote",
+                player.as_bytes(),
+                Duration::minutes(1),
+                limit,
+            )
+            .await?;
             (player, jar)
         }
     };

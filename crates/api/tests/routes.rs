@@ -487,8 +487,11 @@ async fn answer_times_come_from_the_server_not_the_client(pool: PgPool) {
     let mut body = vote_body(&items[3], &valid_answer(&items[3]));
     body["served"] = json!(token);
     h.vote(Some(&cookie), body).await;
-    h.vote(Some(&cookie), vote_body(&items[4], &valid_answer(&items[4])))
-        .await;
+    h.vote(
+        Some(&cookie),
+        vote_body(&items[4], &valid_answer(&items[4])),
+    )
+    .await;
     let mut body = vote_body(&items[2], &valid_answer(&items[2]));
     body["served"] = json!(token);
     let (status, _, _) = h.vote(None, body).await;
@@ -1952,7 +1955,13 @@ async fn an_explanation_waits_for_the_reveal(pool: PgPool) {
     assert!(!page.contains("Why:"));
 
     // Once it's out of play, the reveal explains it to whoever answered it.
-    decide(&h, item, Some(&valid_answer(item)), json!({ valid_answer(item): 1.0 })).await;
+    decide(
+        &h,
+        item,
+        Some(&valid_answer(item)),
+        json!({ valid_answer(item): 1.0 }),
+    )
+    .await;
     h.clock.advance(Duration::days(1));
     h.scored("2026-10-28").await;
     let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
@@ -2121,7 +2130,10 @@ async fn gold_that_still_has_a_showing_to_come_is_not_revealed(pool: PgPool) {
         .await
         .unwrap();
     let (_, scored, right) = dorman_db::player_record(&h.pool, player).await.unwrap();
-    assert_eq!((scored, right), (items.len() as i64 - 3, items.len() as i64 - 3));
+    assert_eq!(
+        (scored, right),
+        (items.len() as i64 - 3, items.len() as i64 - 3)
+    );
 }
 
 /// Property: run the real scheduler for weeks over a pool of gold, a day at a
@@ -2137,7 +2149,7 @@ async fn no_gold_is_revealed_before_it_retires(pool: PgPool) {
     let h = Harness::new(pool);
     let mut batch = dorman_testkit::example_batch();
     let template = batch.items.clone();
-    batch.items = (0..40)
+    batch.items = (0..80)
         .map(|n| {
             let mut item = template[n % template.len()].clone();
             match &mut item {
@@ -2152,7 +2164,7 @@ async fn no_gold_is_revealed_before_it_retires(pool: PgPool) {
 
     let first = day("2026-10-01");
     let mut revealed_gold: HashSet<String> = HashSet::new();
-    let (mut checked, mut ran_on) = (0, 0);
+    let (mut checked, mut ran_on, mut days_run) = (0, 0, 0);
     let mut last: Option<(Vec<StoredItem>, String)> = None;
     for n in 0..30 {
         let today = first + chrono::Days::new(n);
@@ -2168,6 +2180,10 @@ async fn no_gold_is_revealed_before_it_retires(pool: PgPool) {
         );
         dorman_db::set_daily(&h.pool, today, &keys).await.unwrap();
         let set = dorman_db::daily_set(&h.pool, today).await.unwrap().unwrap();
+        if set.is_empty() {
+            break; // The pool has run dry.
+        }
+        days_run += 1;
         for item in &set {
             assert!(
                 !revealed_gold.contains(&item.id.to_string()),
@@ -2181,7 +2197,9 @@ async fn no_gold_is_revealed_before_it_retires(pool: PgPool) {
         if let Some((yesterday, cookie)) = &last {
             ran_on += set
                 .iter()
-                .filter(|i| i.item.gold_answer().is_some() && yesterday.iter().any(|y| y.id == i.id))
+                .filter(|i| {
+                    i.item.gold_answer().is_some() && yesterday.iter().any(|y| y.id == i.id)
+                })
                 .count();
             h.scored(&today.to_string()).await;
             let (_, _, page) = h.get("/yesterday", Some(cookie)).await;
@@ -2214,6 +2232,7 @@ async fn no_gold_is_revealed_before_it_retires(pool: PgPool) {
         }
         last = Some((set, cookie));
     }
+    assert!(days_run >= 15, "only {days_run} days had a set");
     assert!(ran_on > 0, "some gold ran on, so the property bites");
     assert!(checked > 10, "only {checked} gold reveals checked");
 }
@@ -2258,13 +2277,18 @@ async fn only_players_actually_created_count_against_a_network(pool: PgPool) {
     // Failed human checks, and refusals once the network is full, use up
     // nothing.
     for _ in 0..3 {
-        let (status, _, _) = h.vote(None, with_token(&items[0], "forged-token-xxxxxxxxxx")).await;
+        let (status, _, _) = h
+            .vote(None, with_token(&items[0], "forged-token-xxxxxxxxxx"))
+            .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
     assert_eq!(h.vote(None, body.clone()).await.0, StatusCode::OK);
     assert_eq!(h.vote(None, body.clone()).await.0, StatusCode::OK);
     for _ in 0..3 {
-        assert_eq!(h.vote(None, body.clone()).await.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            h.vote(None, body.clone()).await.0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
     }
     let hits: i32 = sqlx::query_scalar("SELECT hits FROM rate_limits WHERE scope = 'new_player'")
         .fetch_one(&h.pool)

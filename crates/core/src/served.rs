@@ -25,7 +25,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return None;
     }
     (0..text.len())
@@ -74,7 +74,15 @@ mod tests {
         let token = sign(KEY, "item", "", 1000);
         let (_, tag) = token.split_once('.').unwrap();
         assert_eq!(served_at(KEY, &format!("1.{tag}"), "item", ""), None);
-        for junk in ["", "1000", "1000.", "x.y", "1000.zz", "1000.abc", &token[..10]] {
+        for junk in [
+            "",
+            "1000",
+            "1000.",
+            "x.y",
+            "1000.zz",
+            "1000.abc",
+            &token[..10],
+        ] {
             assert_eq!(served_at(KEY, junk, "item", ""), None, "{junk}");
         }
     }
