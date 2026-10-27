@@ -27,3 +27,9 @@ updates:
     groups:
       actions:
         patterns: ['*']
+
+  # Base images in the Dockerfile (Rust, distroless, Python).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

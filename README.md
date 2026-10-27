@@ -138,6 +138,42 @@ Players may also say how sure they are (`unsure`, `fairly`, `certain`); that
 is stored on the vote and summarised on their results page, and the scorer
 ignores it.
 
+## Running with Docker
+
+Publishing a GitHub release (the draft that release-drafter keeps up to date)
+builds two images and pushes them to GitHub's container registry, tagged with
+the version and `latest`:
+
+| Image | What's in it |
+|---|---|
+| `ghcr.io/jumpinjet22/doorman` | `dorman-api` (the entrypoint) and `dorman-ingest`. Distroless: no shell, runs as non-root. About 16 MB to download. |
+| `ghcr.io/jumpinjet22/doorman-jobs` | `dorman-scorer`, `dorman-trainer` and `dorman-ingest`, for the nightly cron. Runs as user `dorman`. |
+
+```bash
+# Once: create the tables (and after every upgrade).
+docker run --rm -e DATABASE_URL --entrypoint dorman-ingest ghcr.io/jumpinjet22/doorman migrate
+
+# The game. Inside the container it listens on 0.0.0.0:8080.
+docker run -d --name doorman -p 127.0.0.1:8080:8080 \
+  -e DATABASE_URL -e DORMAN_PUBLIC_ORIGIN=https://doorman.knock.cam \
+  -e DORMAN_COOKIE_SECRET_FILE=/run/secrets/cookie -v /etc/doorman/cookie:/run/secrets/cookie:ro \
+  -e DORMAN_LAUNCH_DATE -e DORMAN_TURNSTILE_SITE_KEY -e DORMAN_TURNSTILE_SECRET \
+  -e DORMAN_CLIENT_IP_HEADER=CF-Connecting-IP \
+  ghcr.io/jumpinjet22/doorman
+
+# Nightly, from cron: score, export, train.
+docker run --rm -e DATABASE_URL ghcr.io/jumpinjet22/doorman-jobs dorman-scorer
+docker run --rm -e DATABASE_URL -v /var/lib/dorman:/var/lib/dorman \
+  ghcr.io/jumpinjet22/doorman-jobs dorman-ingest export /var/lib/dorman/export
+docker run --rm -v /var/lib/dorman:/var/lib/dorman \
+  ghcr.io/jumpinjet22/doorman-jobs dorman-trainer /var/lib/dorman/export /var/lib/dorman/models
+```
+
+`/var/lib/dorman` must be writable by uid 10001. Only set
+`DORMAN_CLIENT_IP_HEADER` when Cloudflare (or another proxy that overwrites
+it) is the only way in. A PR that changes the `Dockerfile` builds and
+smoke-tests both images without pushing them.
+
 ## Configuration
 
 `dorman-api` settings, as environment variables:

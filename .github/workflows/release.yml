@@ -1,0 +1,100 @@
+name: release
+
+# Publishing a release (the draft release-drafter keeps up to date) builds
+# both images and pushes them to GitHub's container registry:
+#
+#   ghcr.io/<owner>/doorman       the web server, plus dorman-ingest
+#   ghcr.io/<owner>/doorman-jobs  dorman-scorer, dorman-trainer, dorman-ingest
+#
+# tagged with the release's version (v1.2.3 -> 1.2.3) and, unless it's a
+# pre-release, `latest`. A PR that touches the image only builds it.
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/release.yml
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - target: server
+            name: doorman
+          - target: jobs
+            name: doorman-jobs
+    steps:
+      - uses: actions/checkout@v7
+      - name: Work out the tags
+        id: tags
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.event.release.tag_name }}
+          PRERELEASE: ${{ github.event.release.prerelease }}
+          OWNER: ${{ github.repository_owner }}
+          NAME: ${{ matrix.name }}
+        run: |
+          image="ghcr.io/${OWNER,,}/${NAME}"
+          if [ "$EVENT" != release ]; then
+            echo "tags=${image}:pr" >> "$GITHUB_OUTPUT"
+            echo "version=pr" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Release tags are typed by hand; take only a plain version.
+          if ! [[ "$TAG" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)$ ]]; then
+            echo "::error::release tag '$TAG' isn't a version like v1.2.3"
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}"
+          tags="${image}:${version}"
+          if [ "$PRERELEASE" != true ]; then tags="${tags} ${image}:latest"; fi
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+          VERSION: ${{ steps.tags.outputs.version }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          args=()
+          for tag in $TAGS; do args+=(--tag "$tag"); done
+          docker build --target "$TARGET" "${args[@]}" \
+            --label "org.opencontainers.image.source=$SOURCE" \
+            --label "org.opencontainers.image.version=$VERSION" \
+            --label "org.opencontainers.image.revision=$REVISION" \
+            --label "org.opencontainers.image.licenses=MIT" .
+      - name: Smoke test
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          image="${TAGS%% *}"
+          if [ "$TARGET" = server ]; then
+            docker run --rm --entrypoint /usr/local/bin/dorman-ingest "$image" --help
+            docker run --rm "$image" --help
+          else
+            docker run --rm "$image" dorman-scorer --help
+            docker run --rm "$image" dorman-trainer --help
+            docker run --rm "$image" dorman-ingest --help
+          fi
+      - name: Push
+        if: github.event_name == 'release'
+        env:
+          TAGS: ${{ steps.tags.outputs.tags }}
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          for tag in $TAGS; do docker push "$tag"; done
