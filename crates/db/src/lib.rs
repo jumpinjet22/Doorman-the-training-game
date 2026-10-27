@@ -541,21 +541,68 @@ pub async fn verdicts(pool: &PgPool, item_ids: &[Uuid]) -> Result<HashMap<Uuid, 
             .fetch_all(pool)
             .await?;
     rows.iter()
+        .map(|row| Ok((row.try_get("item_id")?, verdict(row)?)))
+        .collect()
+}
+
+/// A `Verdict` from a row with `status`, `label` and `split` columns.
+fn verdict(row: &sqlx::postgres::PgRow) -> Result<Verdict, Error> {
+    let split: HashMap<String, f64> =
+        serde_json::from_value(row.try_get("split")?).map_err(|e| Error::Decode(e.into()))?;
+    let mut split: Vec<(String, f64)> = split.into_iter().collect();
+    split.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    Ok(Verdict {
+        status: row.try_get("status")?,
+        label: row.try_get("label")?,
+        split,
+    })
+}
+
+// -- export -------------------------------------------------------------------
+
+/// An item as the training export sees it.
+#[derive(Debug, Clone)]
+pub struct ExportItem {
+    pub item: StoredItem,
+    pub batch: String,
+    /// None until the scorer has looked at it.
+    pub verdict: Option<Verdict>,
+    /// Every answer it has had, daily and Overtime.
+    pub votes: i64,
+}
+
+/// Every item from an approved batch, with the scorer's verdict and its vote
+/// count, in `item_key` order so exports diff cleanly.
+pub async fn export_items(pool: &PgPool) -> Result<Vec<ExportItem>, Error> {
+    let rows = sqlx::query(concat!(
+        "SELECT i.id, i.item_key, i.payload, i.batch,
+                c.status, c.label, c.split,
+                (SELECT count(*) FROM votes v WHERE v.item_id = i.id) AS votes
+         FROM items i LEFT JOIN consensus c ON c.item_id = i.id
+         WHERE ",
+        approved!(),
+        " ORDER BY i.item_key"
+    ))
+    .fetch_all(pool)
+    .await?;
+    rows.iter()
         .map(|row| {
-            let split: HashMap<String, f64> = serde_json::from_value(row.try_get("split")?)
-                .map_err(|e| Error::Decode(e.into()))?;
-            let mut split: Vec<(String, f64)> = split.into_iter().collect();
-            split.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            Ok((
-                row.try_get("item_id")?,
-                Verdict {
-                    status: row.try_get("status")?,
-                    label: row.try_get("label")?,
-                    split,
-                },
-            ))
+            let scored: Option<String> = row.try_get("status")?;
+            Ok(ExportItem {
+                item: stored_item(row)?,
+                batch: row.try_get("batch")?,
+                verdict: scored.map(|_| verdict(row)).transpose()?,
+                votes: row.try_get("votes")?,
+            })
         })
         .collect()
+}
+
+/// The day of the latest finished scoring run, if any.
+pub async fn latest_scoring_day(pool: &PgPool) -> Result<Option<NaiveDate>, Error> {
+    sqlx::query_scalar("SELECT max(day) FROM scoring_runs")
+        .fetch_one(pool)
+        .await
 }
 
 // -- overtime -----------------------------------------------------------------

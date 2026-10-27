@@ -1354,3 +1354,67 @@ async fn handle_records_count_days_and_settled_answers_for_named_players(pool: P
         ]
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_export_sees_approved_items_with_their_verdicts_and_votes(pool: PgPool) {
+    let today = day("2026-10-27");
+    let items = seed_day(&pool, today).await;
+    let mut pending = example_batch();
+    pending.batch = "pending-1".into();
+    for item in &mut pending.items {
+        match item {
+            BatchItem::Intent(i) => i.item_key = format!("p-{}", i.item_key),
+            BatchItem::Pair(p) => p.item_key = format!("p-{}", p.item_key),
+        }
+    }
+    load_pending(&pool, &pending).await;
+    let player = dorman_db::create_player(&pool).await.unwrap();
+    answer(&pool, player, today, &items[0]).await;
+    sqlx::query(
+        "INSERT INTO consensus (item_id, label, share, total_weight, status, split)
+         VALUES ($1, 'x', 0.75, 4, 'settled', '{\"x\": 3, \"y\": 1}')",
+    )
+    .bind(items[0].id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO scoring_runs (day, started_at, finished_at, players, items, settled,
+                                   disputed, brigaded, config)
+         VALUES ($1, now(), now(), 1, 1, 1, 0, 0, '{}')",
+    )
+    .bind(today)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let exported = dorman_db::export_items(&pool).await.unwrap();
+    // Only the approved batch, in item_key order.
+    assert_eq!(exported.len(), example_batch().items.len());
+    assert!(exported.iter().all(|e| e.batch == example_batch().batch));
+    let keys: Vec<&str> = exported.iter().map(|e| e.item.item_key.as_str()).collect();
+    let mut sorted = keys.clone();
+    sorted.sort_unstable();
+    assert_eq!(keys, sorted);
+
+    let first = exported.iter().find(|e| e.item.id == items[0].id).unwrap();
+    assert_eq!(first.votes, 1);
+    let verdict = first.verdict.as_ref().unwrap();
+    assert_eq!(
+        (verdict.status.as_str(), verdict.label.as_deref()),
+        ("settled", Some("x"))
+    );
+    assert_eq!(verdict.split, vec![("x".into(), 3.0), ("y".into(), 1.0)]);
+    let unscored = exported.iter().filter(|e| e.verdict.is_none()).count();
+    assert_eq!(unscored, exported.len() - 1);
+
+    assert_eq!(
+        dorman_db::latest_scoring_day(&pool).await.unwrap(),
+        Some(today)
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn no_scoring_run_means_no_scored_day(pool: PgPool) {
+    assert_eq!(dorman_db::latest_scoring_day(&pool).await.unwrap(), None);
+}

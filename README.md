@@ -17,6 +17,7 @@ a dorman-batch file ─▶ dorman-ingest load      (pending review)
                        dorman-ingest daily      (publishes a day's set)
                        dorman-api               (players vote)
                        dorman-scorer            (nightly: trust + consensus, saved in Postgres)
+                       dorman-ingest export     (training data: intent + DPO JSONL)
 ```
 
 A batch is a `dorman-batch` v1 JSON file (see `fixtures/batch.example.json`
@@ -29,7 +30,7 @@ Postgres; nothing is exchanged with another system.
 |---|---|
 | `crates/core` | Batch format, daily-set picking, intent options, share card. Pure, no IO. |
 | `crates/db` | Postgres queries and `migrations/`. |
-| `crates/ingest` | `dorman-ingest`: `migrate`, `load <batch.json>`, `review`/`approve <batch>`, `daily [--day] [--gold-showings N]` (gold retires after N sets, default 5; warns when it runs low). |
+| `crates/ingest` | `dorman-ingest`: `migrate`, `load <batch.json>`, `review`/`approve <batch>`, `daily [--day] [--gold-showings N]` (gold retires after N sets, default 5; warns when it runs low), `clear-handle <handle>`, `export <dir>` (training data, below). |
 | `crates/api` | `dorman-api`: Axum server, renders pages itself (askama + vanilla JS): today's game one card at a time, results and share card, Overtime, ranks, `/leaderboard`, `/yesterday`, `/about`. |
 | `scorer/` | `dorman-scorer`: Python nightly job. Gold trust, Dawid-Skene, behavior flags, consensus. |
 | `fixtures/batch.example.json` | An example `dorman-batch` file, used by tests. |
@@ -191,6 +192,31 @@ Every threshold is configurable: `--profile soft-launch` (weight 2.0, share
 0.7, brigade detection off, since on launch day every account is new), `DORMAN_MIN_WEIGHT`-style environment variables, or flags; see
 `python -m dorman_scorer --help`. 5.0 weight is about 8 regulars with 20 gold
 answers each, so use the soft-launch profile until real traffic exists.
+
+## Training data
+
+`dorman-ingest export <dir>` writes what the crowd has decided, for a
+training job to pick up. Run it after the scorer's nightly pass.
+
+| File | One row per | Fields |
+|---|---|---|
+| `intent.jsonl` | labelled intent item | `id`, `text`, `scene`, `label`, `source`, `intended_intent`, `agreement`, `weight`, `votes`, `batch` |
+| `dpo.jsonl` | pair item with a preferred reply | `prompt`, `chosen`, `rejected` (loads straight into a DPO trainer), plus `id`, `text`, `scene`, `source`, `agreement`, `weight`, `votes`, `batch` |
+| `manifest.json` | export | format and version, when it ran, `scored_through` (latest scoring run), row count and SHA-256 per file, and how many items were skipped and why |
+
+- Gold items are labelled with their known answer (`source: "gold"`).
+  Everything else is exported only once the scorer has settled it
+  (`source: "crowd"`). Open and disputed items are skipped, and so are pairs
+  judged `both_bad`, since there's no reply to prefer.
+- Brigade and cohort votes are already zeroed, so they never shape a label.
+- `agreement` is the share of trust behind the exported label and `weight` the
+  total trust on the item. Filter or weight on them to keep only confident
+  labels. Both are null for gold nobody has answered yet.
+- Only approved batches are exported. Files are written through a rename, so
+  a reader never sees half of one, and the manifest is written last.
+
+**An export holds every gold answer.** Keep it off the web server's static
+paths and out of the repo; anyone with it can pass as a perfect player.
 
 ## Not done yet (before going public)
 
