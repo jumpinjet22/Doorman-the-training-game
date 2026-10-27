@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::pages::finished_today;
 use crate::security::ClientIp;
 use crate::views::{choice_label, ErrorPage};
 use crate::{known_player, AppError, AppState, PLAYER_COOKIE};
@@ -176,6 +177,8 @@ async fn human_check(
 
 /// One vote, however it arrived.
 pub struct Ballot {
+    /// An Overtime answer rather than one for today's set.
+    pub overtime: bool,
     pub item_id: Uuid,
     pub answer: String,
     pub ms_to_answer: i64,
@@ -187,8 +190,8 @@ pub struct Taken {
     pub item: StoredItem,
     /// False if the player had already answered this item.
     pub recorded: bool,
-    /// Items in today's set the player still hasn't answered.
-    pub remaining: usize,
+    /// Items in today's set the player still hasn't answered (None in Overtime).
+    pub remaining: Option<usize>,
 }
 
 async fn cast(
@@ -201,9 +204,31 @@ async fn cast(
     let items = dorman_db::daily_set(&state.pool, day)
         .await?
         .unwrap_or_default();
-    let Some(item) = items.iter().find(|item| item.id == ballot.item_id) else {
-        let refusal = Refusal::new(StatusCode::NOT_FOUND, "That item isn't in today's set.");
-        return Ok((Err(refusal), jar));
+    let overtime_item;
+    let item = if ballot.overtime {
+        // Only someone who's finished today plays Overtime, so there's no
+        // new player here, and every Overtime player has trust from a daily.
+        let player = known_player(state, &jar).await?;
+        let finished = match player {
+            Some(player) => finished_today(state, player, day).await?,
+            None => false,
+        };
+        let Some(player) = player.filter(|_| finished) else {
+            let refusal = Refusal::new(StatusCode::FORBIDDEN, "Finish today's game first.");
+            return Ok((Err(refusal), jar));
+        };
+        overtime_item = dorman_db::overtime_item(&state.pool, player, day, ballot.item_id).await?;
+        let Some(item) = &overtime_item else {
+            let refusal = Refusal::new(StatusCode::NOT_FOUND, "That item isn't up for Overtime.");
+            return Ok((Err(refusal), jar));
+        };
+        item
+    } else {
+        let Some(item) = items.iter().find(|item| item.id == ballot.item_id) else {
+            let refusal = Refusal::new(StatusCode::NOT_FOUND, "That item isn't in today's set.");
+            return Ok((Err(refusal), jar));
+        };
+        item
     };
     let valid = match &item.item {
         BatchItem::Intent(_) => item.options.contains(&ballot.answer),
@@ -226,15 +251,22 @@ async fn cast(
         return Ok((Err(Refusal::too_many(wait, "Slow down a little.")), jar));
     }
     let ms = ballot.ms_to_answer.clamp(0, MAX_MS_TO_ANSWER.into()) as i32;
+    // Overtime answers belong to no day.
+    let vote_day = (!ballot.overtime).then_some(day);
     let recorded =
-        dorman_db::record_vote(&state.pool, player, item.id, Some(day), &ballot.answer, ms).await?;
-    dorman_db::record_progress(&state.pool, player, day).await?;
-    let ids: Vec<Uuid> = items.iter().map(|item| item.id).collect();
-    let answered = dorman_db::player_answers(&state.pool, player, &ids).await?;
+        dorman_db::record_vote(&state.pool, player, item.id, vote_day, &ballot.answer, ms).await?;
+    let remaining = if ballot.overtime {
+        None
+    } else {
+        dorman_db::record_progress(&state.pool, player, day).await?;
+        let ids: Vec<Uuid> = items.iter().map(|item| item.id).collect();
+        let answered = dorman_db::player_answers(&state.pool, player, &ids).await?;
+        Some(items.len() - answered.len())
+    };
     let taken = Taken {
         item: item.clone(),
         recorded,
-        remaining: items.len() - answered.len(),
+        remaining,
     };
     Ok((Ok(taken), jar))
 }
@@ -246,6 +278,8 @@ pub struct VoteRequest {
     ms_to_answer: i32,
     #[serde(default)]
     turnstile_token: String,
+    #[serde(default)]
+    overtime: bool,
 }
 
 #[derive(Serialize)]
@@ -258,7 +292,8 @@ struct SplitRow {
 #[derive(Serialize)]
 struct VoteResponse {
     recorded: bool,
-    remaining: usize,
+    /// Null in Overtime, which never runs out the same way.
+    remaining: Option<usize>,
     split: Vec<SplitRow>,
 }
 
@@ -270,6 +305,7 @@ pub async fn vote_json(
     Json(request): Json<VoteRequest>,
 ) -> Result<Response, AppError> {
     let ballot = Ballot {
+        overtime: request.overtime,
         item_id: request.item_id,
         answer: request.answer,
         ms_to_answer: request.ms_to_answer.into(),
@@ -305,6 +341,8 @@ pub struct VoteForm {
     shown_at: i64,
     #[serde(rename = "cf-turnstile-response", default)]
     turnstile_token: String,
+    /// Present, as "1", on an Overtime card.
+    overtime: Option<String>,
 }
 
 /// `POST /vote`: the same vote as a plain form post, for when `play.js`
@@ -316,7 +354,9 @@ pub async fn vote_form(
     Form(form): Form<VoteForm>,
 ) -> Result<Response, AppError> {
     let now = state.clock.now().timestamp_millis();
+    let overtime = form.overtime.is_some();
     let ballot = Ballot {
+        overtime,
         item_id: form.item_id,
         answer: form.answer,
         ms_to_answer: now.saturating_sub(form.shown_at),
@@ -324,7 +364,8 @@ pub async fn vote_form(
     };
     match cast(&state, jar, ip, ballot).await? {
         (Ok(taken), jar) => {
-            let to = format!("/?after={}", taken.item.id);
+            let page = if overtime { "/overtime" } else { "/" };
+            let to = format!("{page}?after={}", taken.item.id);
             Ok((jar, Redirect::to(&to)).into_response())
         }
         (Err(refusal), jar) => Ok((jar, refusal.page()?).into_response()),

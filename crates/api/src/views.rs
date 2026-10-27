@@ -2,6 +2,8 @@
 //! the generator's label and judge scores; none of that leaves through here.
 
 use askama::Template;
+use dorman_core::batch::{PairItem, Reply};
+use dorman_core::daily::seeded_shuffle;
 use dorman_core::{BatchItem, BOTH_BAD};
 use dorman_db::StoredItem;
 use uuid::Uuid;
@@ -77,6 +79,8 @@ pub struct CardPage {
     pub split: Option<Vec<Bar>>,
     /// Whether this was the last card.
     pub last: bool,
+    /// In Overtime, how many Overtime answers the player has given.
+    pub overtime: Option<i64>,
 }
 
 #[derive(Template)]
@@ -102,6 +106,10 @@ pub struct ResultsPage {
     pub rows: Vec<ResultRow>,
     pub card: String,
     pub streak: u32,
+    /// The player's rank's name.
+    pub rank: Option<&'static str>,
+    /// Their leaderboard name, if they've picked one.
+    pub handle: Option<String>,
     /// Whether any square is still waiting for the night's scoring.
     pub pending: bool,
 }
@@ -129,6 +137,31 @@ pub struct YesterdayPage {
 #[derive(Template)]
 #[template(path = "about.html")]
 pub struct AboutPage;
+
+/// A heading, a sentence and a way on.
+#[derive(Template)]
+#[template(path = "message.html")]
+pub struct MessagePage {
+    pub heading: &'static str,
+    pub message: &'static str,
+    /// (href, text)
+    pub link: (&'static str, &'static str),
+}
+
+pub struct BoardRow {
+    pub place: usize,
+    pub handle: String,
+    pub percent: u32,
+    pub scored: u32,
+}
+
+#[derive(Template)]
+#[template(path = "leaderboard.html")]
+pub struct LeaderboardPage {
+    pub week_of: String,
+    pub minimum: u32,
+    pub rows: Vec<BoardRow>,
+}
 
 #[derive(Template)]
 #[template(path = "error.html")]
@@ -179,13 +212,27 @@ pub fn intent_label(intent: &str) -> String {
 pub fn choice_label(item: &BatchItem, answer: &str) -> String {
     match item {
         BatchItem::Intent(_) => intent_label(answer),
-        BatchItem::Pair(pair) => match pair.replies.iter().position(|r| r.knock_key == answer) {
+        BatchItem::Pair(pair) => match reply_order(pair).iter().position(|r| r.knock_key == answer)
+        {
             Some(0) => "Reply A".to_string(),
             Some(_) => "Reply B".to_string(),
             None if answer == BOTH_BAD => "Both bad".to_string(),
-            None => answer.to_string(),
+            None => "Something else".to_string(),
         },
     }
+}
+
+/// A pair's replies in the order players see them, shuffled per item so
+/// whichever reply KNOCK wrote first isn't always A. Stable, so everyone
+/// sees the same order and a reload doesn't swap them.
+pub fn reply_order(pair: &PairItem) -> Vec<&Reply> {
+    let keys = seeded_shuffle(
+        &pair.knock_key,
+        pair.replies.iter().map(|r| r.knock_key.as_str()).collect(),
+    );
+    keys.iter()
+        .filter_map(|key| pair.replies.iter().find(|r| r.knock_key == *key))
+        .collect()
 }
 
 impl PublicItem {
@@ -207,9 +254,8 @@ impl PublicItem {
                 answered,
             },
             BatchItem::Pair(item) => {
-                let mut choices: Vec<Choice> = item
-                    .replies
-                    .iter()
+                let mut choices: Vec<Choice> = reply_order(item)
+                    .into_iter()
                     .zip(["A", "B"])
                     .map(|(reply, letter)| Choice {
                         value: reply.knock_key.clone(),
@@ -266,6 +312,7 @@ mod tests {
                 turnstile_site_key: "site-key".into(),
                 split: None,
                 last: false,
+                overtime: None,
             }
             .render()
             .unwrap();
@@ -304,6 +351,40 @@ mod tests {
         assert_eq!(until(1), "1 min");
         assert_eq!(until(3600), "1 h 0 min");
         assert_eq!(until(5 * 3600 + 11 * 60 + 30), "5 h 12 min");
+    }
+
+    #[test]
+    fn pair_replies_are_shuffled_per_item_and_labelled_to_match() {
+        let batch = Batch::parse(EXAMPLE).unwrap();
+        let BatchItem::Pair(template) = batch
+            .items
+            .iter()
+            .find(|i| matches!(i, BatchItem::Pair(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        // Over many items, the first reply KNOCK wrote lands on A about half the time.
+        let mut first_is_a = 0;
+        for n in 0..200 {
+            let mut pair = template.clone();
+            pair.knock_key = format!("pair:{n}");
+            let order = reply_order(&pair);
+            assert_eq!(order.len(), 2);
+            assert_eq!(reply_order(&pair), order, "stable");
+            if order[0].knock_key == pair.replies[0].knock_key {
+                first_is_a += 1;
+            }
+            let item = BatchItem::Pair(pair.clone());
+            let public = PublicItem::from_stored(&stored(&item, vec![]), None);
+            assert_eq!(public.choices[0].value, order[0].knock_key);
+            assert_eq!(choice_label(&item, &order[0].knock_key), "Reply A");
+            assert_eq!(choice_label(&item, &order[1].knock_key), "Reply B");
+        }
+        assert!((60..140).contains(&first_is_a), "{first_is_a} of 200");
+        let item = BatchItem::Pair(template.clone());
+        assert_eq!(choice_label(&item, "both_bad"), "Both bad");
+        assert_eq!(choice_label(&item, "some-raw-key"), "Something else");
     }
 
     #[test]

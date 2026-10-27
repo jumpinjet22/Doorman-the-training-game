@@ -83,6 +83,29 @@ def verdict(
     return Verdict(item.id, item.knock_key, item.mode, status, label, share, total, split, p_label)
 
 
+def gold_verdict(item: Item, votes: list[Vote], trust: dict[str, float]) -> Verdict:
+    """A gold item's row, for the reveal page and share cards only: settled on
+    its known answer, with the crowd's weighted split, so it reads exactly
+    like any other settled item and players can't pick gold out. Never
+    exported (KNOCK already knows the answer) and not counted in the run log.
+    """
+    weight_by_label: dict[str, float] = defaultdict(float)
+    for vote in votes:
+        weight_by_label[vote.answer] += trust.get(vote.player_id, 0.0)
+    total = sum(weight_by_label.values())
+    gold = item.gold_answer
+    share = weight_by_label.get(gold, 0.0) / total if total and gold else 0.0
+    split = dict(sorted(weight_by_label.items()))
+    return Verdict(item.id, item.knock_key, item.mode, "settled", gold, share, total, split)
+
+
+def gold_verdicts(items: list[Item], votes: list[Vote], trust: dict[str, float]) -> list[Verdict]:
+    by_item: dict[str, list[Vote]] = defaultdict(list)
+    for vote in votes:
+        by_item[vote.item_id].append(vote)
+    return [gold_verdict(i, by_item[i.id], trust) for i in items if i.gold_answer is not None]
+
+
 def consensus_file(day: date, verdicts: list[Verdict]) -> dict[str, object]:
     """`knock-game-consensus` v1, as KNOCK's import_game_consensus.py reads it.
     Gold items are left out: KNOCK already knows those answers.

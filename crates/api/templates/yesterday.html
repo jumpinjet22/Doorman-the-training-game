@@ -19,7 +19,7 @@
 <p class="hint">Bars are weighted: players with a track record of good answers count for more.</p>
 <ol class="results">
   {% for row in rows %}
-  <li class="result">
+  <li class="result" data-item="{{ row.item.id }}">
     <p class="prompt">{{ row.item.prompt }}</p>
     {% call m::scene(row.item) %}
     <p class="verdict">{{ row.verdict }}</p>

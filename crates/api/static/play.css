@@ -43,3 +43,11 @@ button.mine { border-color: var(--accent); border-width: 2px; opacity: 1; }
 .actions button { width: auto; margin: 0; }
 .hint, .verdict { color: var(--muted); font-size: .9rem; }
 .verdict { color: var(--fg); }
+.handle { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.handle label { flex-basis: 100%; }
+.handle input { font: inherit; padding: .5rem; border: 1px solid var(--muted); border-radius: 8px; background: var(--card);
+                color: var(--fg); flex: 1 1 10rem; min-width: 0; }
+.handle button { width: auto; margin: 0; }
+.board { width: 100%; border-collapse: collapse; }
+.board th, .board td { text-align: left; padding: .4rem .3rem; border-bottom: 1px solid var(--line); }
+.board td:first-child, .board th:first-child { width: 2rem; }

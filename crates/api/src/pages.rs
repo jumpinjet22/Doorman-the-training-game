@@ -5,18 +5,24 @@
 use std::collections::HashMap;
 
 use askama::Template;
-use axum::extract::{Query, State};
+use axum::extract::{Form, Query, State};
+use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::SignedCookieJar;
-use chrono::{Days, NaiveDate};
-use dorman_core::{day_number, next_reset, score_answer, share_card, streak, Decision, Outcome};
+use chrono::{Datelike, Days, NaiveDate};
+use dorman_core::ranks::MIN_WEEKLY_SCORED;
+use dorman_core::{
+    day_number, leaderboard, next_reset, rank, score_answer, share_card, streak, Decision, Outcome,
+    Rank, Record, Standing,
+};
 use dorman_db::{StoredItem, Verdict};
 use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::views::{
-    bars, choice_label, until, AboutPage, Bar, CardPage, EmptyPage, Masthead, PublicItem,
-    ResultRow, ResultsPage, RevealRow, YesterdayPage,
+    bars, choice_label, until, AboutPage, Bar, BoardRow, CardPage, EmptyPage, ErrorPage,
+    LeaderboardPage, Masthead, MessagePage, PublicItem, ResultRow, ResultsPage, RevealRow,
+    YesterdayPage,
 };
 use crate::{known_player, AppError, AppState};
 
@@ -131,6 +137,7 @@ fn card(
         turnstile_site_key: state.turnstile_site_key.clone(),
         split,
         last,
+        overtime: None,
     };
     Ok(Html(page.render()?).into_response())
 }
@@ -162,13 +169,15 @@ fn decision(verdict: &Verdict) -> Decision {
     }
 }
 
-/// The squares for a day's card, in set order. Gold is scored against gold;
-/// everything stays pending until the scorer has run after the day.
+/// The squares for a day's card, in set order: pending until the scorer has
+/// run after the day, then scored against the crowd's settled answer, the
+/// same way for every item. Items in `hidden` stay pending.
 async fn outcomes(
     state: &AppState,
     day: NaiveDate,
     items: &[StoredItem],
     answers: &HashMap<Uuid, String>,
+    hidden: &[Uuid],
 ) -> Result<Vec<Outcome>, AppError> {
     let out = dorman_db::results_out(&state.pool, day).await?;
     let ids: Vec<Uuid> = items.iter().map(|item| item.id).collect();
@@ -176,12 +185,10 @@ async fn outcomes(
     Ok(items
         .iter()
         .map(|item| match answers.get(&item.id) {
-            Some(answer) => score_answer(
-                answer,
-                item.item.gold_answer(),
-                verdicts.get(&item.id).map(decision).as_ref(),
-                out,
-            ),
+            Some(_) if hidden.contains(&item.id) => Outcome::Pending,
+            Some(answer) => {
+                score_answer(answer, verdicts.get(&item.id).map(decision).as_ref(), out)
+            }
             None => Outcome::Pending,
         })
         .collect())
@@ -209,7 +216,7 @@ async fn results_page(
     if let Some(player) = player {
         dorman_db::record_progress(&state.pool, player, day).await?;
     }
-    let outcomes = outcomes(state, day, items, answers).await?;
+    let outcomes = outcomes(state, day, items, answers, &[]).await?;
     let streak = player_streak(state, player, day).await?;
     let mut rows = Vec::new();
     for item in items {
@@ -224,8 +231,17 @@ async fn results_page(
             bars,
         });
     }
+    let (rank, handle) = match player {
+        Some(player) => (
+            Some(player_rank(state, player).await?.name()),
+            dorman_db::handle(&state.pool, player).await?,
+        ),
+        None => (None, None),
+    };
     let page = ResultsPage {
         masthead: masthead(state, day),
+        rank,
+        handle,
         card: share_card(
             day_number(state.launch_date, day).unwrap_or(0),
             &outcomes,
@@ -247,15 +263,19 @@ fn verdict_words(verdict: &Verdict, label: &dyn Fn(&str) -> String) -> String {
     }
 }
 
-/// `GET /yesterday`: the weighted breakdown of yesterday's items, once the
-/// night's scoring has run. Items the scorer didn't decide on (those with a
-/// known answer) aren't shown, so their answers can't be learned here, and
-/// nor is the split for an item that's back in today's set.
+/// `GET /yesterday`: yesterday's items once the night's scoring has run,
+/// every one shown the same way whether or not its answer was known in
+/// advance, so the page can't be used to pick those out. An item that's back
+/// in today's set is left out (its split would tip off today's answers), and
+/// how the crowd answered is shown only for items the viewer answered
+/// themselves: they'll never be asked those again, so the page can't teach
+/// anyone answers to use later.
 pub async fn yesterday(
     State(state): State<AppState>,
     jar: SignedCookieJar,
 ) -> Result<Response, AppError> {
-    let day = state.clock.today() - Days::new(1);
+    let today = state.clock.today();
+    let day = today - Days::new(1);
     let items = dorman_db::daily_set(&state.pool, day)
         .await?
         .unwrap_or_default();
@@ -269,40 +289,31 @@ pub async fn yesterday(
     if page.played_day && page.out {
         let player = known_player(&state, &jar).await?;
         let answers = answers(&state, player, &items).await?;
-        if !answers.is_empty() {
-            let outcomes = outcomes(&state, day, &items, &answers).await?;
-            let number = day_number(state.launch_date, day).unwrap_or(0);
-            page.card = Some(share_card(number, &outcomes, 0));
-        }
-        let ids: Vec<Uuid> = items.iter().map(|item| item.id).collect();
-        let verdicts = dorman_db::verdicts(&state.pool, &ids).await?;
-        // A carry-over is back in today's set: showing how the crowd leaned
-        // would tip off today's answers.
-        let back_today: Vec<Uuid> = dorman_db::daily_set(&state.pool, state.clock.today())
+        let back_today: Vec<Uuid> = dorman_db::daily_set(&state.pool, today)
             .await?
             .unwrap_or_default()
             .iter()
             .map(|item| item.id)
             .collect();
-        for item in items
-            .iter()
-            .filter(|item| item.item.gold_answer().is_none())
-        {
-            let Some(verdict) = verdicts.get(&item.id) else {
-                continue;
-            };
-            if back_today.contains(&item.id) {
+        if !answers.is_empty() {
+            let outcomes = outcomes(&state, day, &items, &answers, &back_today).await?;
+            let number = day_number(state.launch_date, day).unwrap_or(0);
+            page.card = Some(share_card(number, &outcomes, 0));
+        }
+        let ids: Vec<Uuid> = items.iter().map(|item| item.id).collect();
+        let verdicts = dorman_db::verdicts(&state.pool, &ids).await?;
+        for item in items.iter().filter(|item| !back_today.contains(&item.id)) {
+            let Some(mine) = answers.get(&item.id).cloned() else {
                 page.rows.push(RevealRow {
-                    verdict: "It's back in today's game, so how the crowd answered stays \
-                              hidden for now."
+                    verdict: "You didn't answer this one, so how the crowd answered stays \
+                              hidden."
                         .into(),
                     bars: Vec::new(),
                     item: PublicItem::from_stored(item, None),
                 });
                 continue;
-            }
-            let mine = answers.get(&item.id).cloned();
-            let public = PublicItem::from_stored(item, mine.clone());
+            };
+            let public = PublicItem::from_stored(item, Some(mine.clone()));
             // Only labels for choices the item actually offered: never a
             // raw key, whatever the scorer wrote.
             let labels: HashMap<String, String> = public
@@ -316,14 +327,194 @@ pub async fn yesterday(
                     .cloned()
                     .unwrap_or_else(|| "Something else".into())
             };
+            let (verdict, bars) = match verdicts.get(&item.id) {
+                Some(verdict) => (
+                    verdict_words(verdict, &label),
+                    bars(&verdict.split, label, Some(&mine)),
+                ),
+                None => ("No votes were counted for this one.".into(), Vec::new()),
+            };
             page.rows.push(RevealRow {
-                verdict: verdict_words(verdict, &label),
-                bars: bars(&verdict.split, label, mine.as_deref()),
+                verdict,
+                bars,
                 item: public,
             });
         }
     }
     Ok(Html(page.render()?).into_response())
+}
+
+async fn player_rank(state: &AppState, player: Uuid) -> Result<Rank, AppError> {
+    let (days, scored, right) = dorman_db::player_record(&state.pool, player).await?;
+    let count = |n: i64| u32::try_from(n).unwrap_or(u32::MAX);
+    Ok(rank(Record {
+        days: count(days),
+        scored: count(scored),
+        right: count(right),
+    }))
+}
+
+/// `GET /overtime`: endless play once today's set is done, from items
+/// already shown in past days, lightest first. Back to `/` otherwise.
+pub async fn overtime(
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Query(query): Query<PlayQuery>,
+) -> Result<Response, AppError> {
+    let today = state.clock.today();
+    let Some(player) = known_player(&state, &jar).await? else {
+        return Ok(Redirect::to("/").into_response());
+    };
+    if !finished_today(&state, player, today).await? {
+        return Ok(Redirect::to("/").into_response());
+    }
+    let answered = dorman_db::overtime_answered(&state.pool, player).await?;
+    let masthead = masthead(&state, today);
+    if let Some(id) = query.after {
+        let mine = dorman_db::player_answers(&state.pool, player, &[id]).await?;
+        if let (Some((_, mine)), Some(item)) =
+            (mine.first(), dorman_db::item(&state.pool, id).await?)
+        {
+            let split = live_bars(&state, &item, Some(mine)).await?;
+            return overtime_card(
+                &state,
+                masthead,
+                &item,
+                Some(mine.clone()),
+                Some(split),
+                answered,
+            );
+        }
+    }
+    match dorman_db::overtime_next(&state.pool, player, today).await? {
+        Some(item) => overtime_card(&state, masthead, &item, None, None, answered),
+        None => {
+            let page = MessagePage {
+                heading: "Overtime",
+                message: "You've answered everything there is for now. New items arrive every day.",
+                link: ("/", "Back to today's results"),
+            };
+            Ok(Html(page.render()?).into_response())
+        }
+    }
+}
+
+fn overtime_card(
+    state: &AppState,
+    masthead: Masthead,
+    item: &StoredItem,
+    answered: Option<String>,
+    split: Option<Vec<Bar>>,
+    count: i64,
+) -> Result<Response, AppError> {
+    let page = CardPage {
+        masthead,
+        position: 0,
+        total: 0,
+        item: PublicItem::from_stored(item, answered),
+        shown_at: state.clock.now().timestamp_millis(),
+        turnstile_site_key: state.turnstile_site_key.clone(),
+        split,
+        last: false,
+        overtime: Some(count),
+    };
+    Ok(Html(page.render()?).into_response())
+}
+
+/// Whether the player has answered every item in today's set.
+pub async fn finished_today(
+    state: &AppState,
+    player: Uuid,
+    today: NaiveDate,
+) -> Result<bool, AppError> {
+    let items = dorman_db::daily_set(&state.pool, today)
+        .await?
+        .unwrap_or_default();
+    if items.is_empty() {
+        return Ok(false);
+    }
+    let answers = answers(state, Some(player), &items).await?;
+    Ok(answers.len() == items.len())
+}
+
+/// `GET /leaderboard`: this week (Monday to today, UTC) by accuracy against
+/// settled answers, players with a handle only.
+pub async fn leaderboard_page(State(state): State<AppState>) -> Result<Response, AppError> {
+    let today = state.clock.today();
+    let monday = today - Days::new(u64::from(today.weekday().num_days_from_monday()));
+    let count = |n: i64| u32::try_from(n).unwrap_or(u32::MAX);
+    let standings = dorman_db::weekly_standings(&state.pool, monday, today)
+        .await?
+        .into_iter()
+        .map(|(handle, scored, right, flagged)| Standing {
+            handle,
+            scored: count(scored),
+            right: count(right),
+            flagged,
+        })
+        .collect();
+    let rows = leaderboard(standings)
+        .into_iter()
+        .enumerate()
+        .map(|(n, s)| BoardRow {
+            place: n + 1,
+            percent: (100.0 * f64::from(s.right) / f64::from(s.scored)).round() as u32,
+            handle: s.handle,
+            scored: s.scored,
+        })
+        .collect();
+    let page = LeaderboardPage {
+        week_of: monday.to_string(),
+        minimum: MIN_WEEKLY_SCORED,
+        rows,
+    };
+    Ok(Html(page.render()?).into_response())
+}
+
+/// A handle shown on the leaderboard: 3 to 20 letters, digits, `_` or `-`,
+/// starting with a letter or digit.
+pub fn valid_handle(handle: &str) -> bool {
+    (3..=20).contains(&handle.len())
+        && handle.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && handle
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+#[derive(Deserialize)]
+pub struct HandleForm {
+    handle: String,
+}
+
+/// `POST /handle`: picks the player's name for the leaderboard.
+pub async fn set_handle(
+    State(state): State<AppState>,
+    jar: SignedCookieJar,
+    Form(form): Form<HandleForm>,
+) -> Result<Response, AppError> {
+    let refuse = |status: StatusCode, message: &'static str| -> Result<Response, AppError> {
+        Ok((status, Html(ErrorPage { message }.render()?)).into_response())
+    };
+    let Some(player) = known_player(&state, &jar).await? else {
+        return refuse(
+            StatusCode::FORBIDDEN,
+            "Play a game first, then pick a name.",
+        );
+    };
+    let handle = form.handle.trim();
+    if !valid_handle(handle) {
+        return refuse(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "A name is 3 to 20 letters, digits, dashes or underscores.",
+        );
+    }
+    if !dorman_db::set_handle(&state.pool, player, handle).await? {
+        return refuse(
+            StatusCode::CONFLICT,
+            "Someone already has that name. Try another.",
+        );
+    }
+    Ok(Redirect::to("/leaderboard").into_response())
 }
 
 pub async fn about() -> Result<Response, AppError> {

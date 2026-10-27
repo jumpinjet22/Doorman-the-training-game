@@ -36,39 +36,24 @@ pub struct Decision {
     pub split: Vec<(String, f64)>,
 }
 
-/// How `answer` scored. Everything is pending until the night's scoring has
-/// run (`results_out`), even gold, so a card never gives away which items
-/// had a known answer while the day is still being played. Gold items are
-/// scored against gold; other items against the settled crowd answer, and
-/// stay pending if the crowd hasn't settled.
-pub fn score_answer(
-    answer: &str,
-    gold: Option<&str>,
-    decision: Option<&Decision>,
-    results_out: bool,
-) -> Outcome {
+/// How `answer` scored against the crowd's settled answer. Everything is
+/// pending until the night's scoring has run (`results_out`), and an item
+/// the crowd hasn't settled stays pending. Items with a known answer get a
+/// settled row from the scorer like any other, so they score the same way
+/// and a card can't single them out.
+pub fn score_answer(answer: &str, decision: Option<&Decision>, results_out: bool) -> Outcome {
     if !results_out {
         return Outcome::Pending;
     }
-    if let Some(gold) = gold {
-        return if answer == gold {
-            Outcome::Right
-        } else {
-            Outcome::Wrong
-        };
-    }
-    let Some(decision) = decision else {
-        return Outcome::Pending;
-    };
-    let Some(settled) = &decision.settled else {
+    let Some(settled) = decision.and_then(|d| d.settled.as_ref()) else {
         return Outcome::Pending;
     };
     if answer == settled {
         return Outcome::Right;
     }
-    let total: f64 = decision.split.iter().map(|(_, w)| w).sum();
-    let mine: f64 = decision
-        .split
+    let split = &decision.expect("settled implies a decision").split;
+    let total: f64 = split.iter().map(|(_, w)| w).sum();
+    let mine: f64 = split
         .iter()
         .filter(|(a, _)| a == answer)
         .map(|(_, w)| w)
@@ -123,42 +108,23 @@ mod tests {
     #[test]
     fn nothing_is_scored_until_the_night_run() {
         let decision = settled("a", &[("a", 1.0)]);
-        assert_eq!(score_answer("a", Some("a"), None, false), Outcome::Pending);
-        assert_eq!(
-            score_answer("a", None, Some(&decision), false),
-            Outcome::Pending
-        );
+        assert_eq!(score_answer("a", Some(&decision), false), Outcome::Pending);
     }
 
     #[test]
-    fn answers_score_against_gold_or_the_settled_crowd() {
-        assert_eq!(score_answer("a", Some("a"), None, true), Outcome::Right);
-        assert_eq!(score_answer("b", Some("a"), None, true), Outcome::Wrong);
-
+    fn answers_score_against_the_settled_crowd() {
         let decision = settled("a", &[("a", 6.0), ("b", 2.5), ("c", 1.5)]);
-        assert_eq!(
-            score_answer("a", None, Some(&decision), true),
-            Outcome::Right
-        );
-        assert_eq!(
-            score_answer("b", None, Some(&decision), true),
-            Outcome::Close
-        );
-        assert_eq!(
-            score_answer("c", None, Some(&decision), true),
-            Outcome::Wrong
-        );
-        assert_eq!(
-            score_answer("d", None, Some(&decision), true),
-            Outcome::Wrong
-        );
+        assert_eq!(score_answer("a", Some(&decision), true), Outcome::Right);
+        assert_eq!(score_answer("b", Some(&decision), true), Outcome::Close);
+        assert_eq!(score_answer("c", Some(&decision), true), Outcome::Wrong);
+        assert_eq!(score_answer("d", Some(&decision), true), Outcome::Wrong);
 
         let open = Decision {
             settled: None,
             split: vec![("a".into(), 1.0)],
         };
-        assert_eq!(score_answer("a", None, Some(&open), true), Outcome::Pending);
-        assert_eq!(score_answer("a", None, None, true), Outcome::Pending);
+        assert_eq!(score_answer("a", Some(&open), true), Outcome::Pending);
+        assert_eq!(score_answer("a", None, true), Outcome::Pending);
     }
 }
 

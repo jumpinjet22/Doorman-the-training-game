@@ -13,6 +13,21 @@
     <span id="copied" role="status"></span>
   </p>
 </section>
+<section aria-labelledby="more-heading">
+  <h2 id="more-heading">Keep going</h2>
+  <p><a class="overtime" href="/overtime">Play Overtime</a>: more cards from earlier days, for as long as you like.</p>
+  {% if let Some(rank) = rank %}<p>Your rank: <strong>{{ rank }}</strong>. Ranks go up with accurate answers over more days, never with how many you give.</p>{% endif %}
+  {% match handle %}
+  {% when Some with (name) %}
+  <p>You're <strong>{{ name }}</strong> on the <a href="/leaderboard">weekly leaderboard</a>.</p>
+  {% when None %}
+  <form class="handle" method="post" action="/handle">
+    <label for="handle">Pick a name for the <a href="/leaderboard">weekly leaderboard</a></label>
+    <input id="handle" name="handle" required minlength="3" maxlength="20" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{2,19}" autocomplete="nickname">
+    <button type="submit">Save</button>
+  </form>
+  {% endmatch %}
+</section>
 <h2>Your answers</h2>
 <ol class="results">
   {% for row in rows %}
