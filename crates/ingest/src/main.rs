@@ -5,6 +5,7 @@
 //!     dorman-ingest review <batch>               # print every item for a skim
 //!     dorman-ingest approve <batch>              # let it into daily sets
 //!     dorman-ingest daily [--day 2026-10-28]     # default: tomorrow (UTC)
+//!     dorman-ingest clear-handle <handle>        # take a reported name away
 //!
 //! A loaded batch is pending until approved; only approved batches feed
 //! daily sets.
@@ -36,6 +37,9 @@ enum Command {
     Review { batch: String },
     /// Make a reviewed batch eligible for daily sets.
     Approve { batch: String },
+    /// Take a leaderboard name away from whoever has it (any case), for a
+    /// reported or offensive name. The player keeps playing.
+    ClearHandle { handle: String },
     /// Pick and publish the daily set for a day.
     Daily {
         #[arg(long)]
@@ -99,6 +103,13 @@ async fn main() -> Result<()> {
                     Some(_) => println!("{batch} was already approved."),
                     None => bail!("no batch called {batch:?} is loaded"),
                 }
+            }
+        }
+        Command::ClearHandle { handle } => {
+            if dorman_db::clear_handle(&pool, &handle).await? {
+                println!("Cleared {handle}; that player is off the leaderboard until they pick a new name.");
+            } else {
+                bail!("nobody has the name {handle:?}");
             }
         }
         Command::Daily { day, gold_showings } => {
