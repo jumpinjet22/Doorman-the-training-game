@@ -295,3 +295,33 @@ M0 ──▶ M1 ──▶ M2 ──▶ M3 ──▶ M4
 M0 and M1 are non-negotiable before anyone outside the house plays. M5 can
 be skipped for launch if you don't want accounts yet. Each milestone lands as
 its own PR, with green CI and the coverage gates passing.
+
+---
+
+## Working in parallel
+
+Milestones are split into tracks that can run at the same time, each on its
+own branch with its own PR into `main`. A coordinator session reviews and
+merges.
+
+| Track | Milestones, in order | Owns | Must not touch |
+|---|---|---|---|
+| **A: API and page** | M1 → M2 → M4 | `crates/api`, `crates/core`, `crates/db/src`, `crates/ingest`, `e2e/test_play.py`, templates and static files | `scorer/` (except reading it) |
+| **B: scorer** | M3, plus the KNOCK `scene_for_players()` fix | `scorer/`, `e2e/test_contract.py`, and in KNOCK `scripts/export_game_batch.py` and its tests | `crates/api`, templates, static files |
+| **C: deploy prep** | M6 minus the actual deploy | `Dockerfile`, `fly.toml`, `.github/workflows/` (new jobs only), `docs/runbook.md` | application code |
+
+**Migration numbers are reserved per track**, so two branches never both add
+`0002_*.sql`:
+- Track A: `0002`–`0009`
+- Track B: `0010`–`0019`
+- Track C: `0020`–`0029` (it shouldn't need any)
+
+**Shared files.** `crates/db/src/lib.rs` (Track B may add queries the scorer
+needs) and `crates/testkit` are shared. Add to them; don't restructure them. If
+a track has to change something another track owns, it says so in its PR
+description so the coordinator can sequence the merges.
+
+**Every PR:** starts from the latest `main`; keeps CI green (fmt, clippy, every
+test suite, coverage gates); adds tests for everything it builds, in the
+layers named in that milestone; and removes a strict-xfail marker in the same
+PR as the fix it describes.
