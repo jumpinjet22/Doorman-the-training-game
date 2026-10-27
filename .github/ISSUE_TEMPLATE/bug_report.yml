@@ -30,6 +30,21 @@ body:
         3. See error
     validations:
       required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      multiple: true
+      options:
+        - Gameplay / play page
+        - API / server
+        - Scoring
+        - Ingest (KNOCK import/export)
+        - Database
+        - Docs
+        - Not sure
+    validations:
+      required: true
   - type: input
     id: version
     attributes:

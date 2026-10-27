@@ -1,7 +1,25 @@
 version: 2
 updates:
-  # Only Actions for now -- add the game's package ecosystem (npm, pip,
-  # nuget, ...) here once there's a manifest for Dependabot to read.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-patch:
+        update-types: [minor, patch]
+
+  # Python deps are ranges -- only open a PR when a release falls outside
+  # the range, not to raise the lower bound. Vulnerable versions are still
+  # handled by Dependabot security updates.
+  - package-ecosystem: pip
+    directories: [/scorer, /e2e]
+    schedule:
+      interval: weekly
+    versioning-strategy: increase-if-necessary
+    groups:
+      python-minor-patch:
+        update-types: [minor, patch]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:

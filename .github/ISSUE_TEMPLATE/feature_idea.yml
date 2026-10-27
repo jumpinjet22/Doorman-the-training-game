@@ -22,6 +22,21 @@ body:
     attributes:
       label: Alternatives considered
   - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - Gameplay / play page
+        - API / server
+        - Scoring
+        - Ingest (KNOCK import/export)
+        - Database
+        - Docs
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
     id: contribute
     attributes:
       label: Would you be willing to help build this?
