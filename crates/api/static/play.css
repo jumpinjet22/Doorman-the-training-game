@@ -6,7 +6,7 @@
 @font-face { font-family: "IBM Plex Sans"; font-weight: 600; font-display: swap; src: url(/static/fonts/ibm-plex-sans-600.woff2) format("woff2"); }
 /* Every page. Served as a file so the CSP can forbid inline styles. */
 /* ink #10161d, dusk #1e2d3d, steel #5b6b7d, porch #e8a33d, mist #f2f4f7, paper #fbfcfd */
-:root { --bg: #f2f4f7; --fg: #10161d; --muted: #5b6b7d; --card: #fbfcfd; --accent: #b7740f; --porch: #e8a33d;
+:root { --bg: #f2f4f7; --fg: #10161d; --muted: #5b6b7d; --card: #fbfcfd; --accent: #8f5a0a; --porch: #e8a33d;
         --line: #d9dee5; --dusk: #1e2d3d;
         --display: "Big Shoulders Display", "Arial Narrow", sans-serif;
         --sans: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif; }
