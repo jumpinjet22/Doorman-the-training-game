@@ -4,6 +4,10 @@ on:
   push:
   pull_request:
 
+# Nothing here writes to the repo, an issue or a PR.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   DATABASE_URL: postgres://dorman:dorman@localhost:5432/dorman
@@ -27,11 +31,14 @@ jobs:
           --health-retries 20
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           components: rustfmt, clippy, llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: taiki-e/install-action@f9ee2b3488b5862cca1caf86effaa61f55953001 # cargo-llvm-cov
+        with:
+          tool: cargo-llvm-cov
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       # Each run executes that crate's unit, property and Postgres tests and
@@ -89,8 +96,10 @@ jobs:
         with:
           repository: jumpinjet22/KNOCK
           path: knock
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
