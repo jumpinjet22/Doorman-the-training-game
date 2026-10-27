@@ -114,6 +114,11 @@ def test_play_a_full_day_resume_after_reload_and_copy_the_card(sized: Page, dorm
         "script-src 'self' https://challenges.cloudflare.com"
         in (response.headers["content-security-policy"])
     )
+    assert "camera=()" in response.headers["permissions-policy"]
+    assert response.headers["cross-origin-opener-policy"] == "same-origin"
+    assert response.headers["cross-origin-resource-policy"] == "same-origin"
+    # Served over plain http, so no HSTS.
+    assert "strict-transport-security" not in response.headers
     expect(page.locator(".day")).to_have_text(f"Day 1 · {DAY}")
     expect(page.locator(".count")).to_have_text("Card 1 of 6")
     assert _card(page).count() == 1
@@ -359,6 +364,28 @@ def test_a_cloudflare_outage_blocks_votes_until_it_recovers(
     assert dorman.query("SELECT count(*) FROM votes WHERE item_id = %s", item_id)[0][0] == (
         before + 1
     )
+
+
+def test_a_token_solved_elsewhere_or_for_another_action_is_refused(
+    page: Page, dorman: Dorman, cloudflare: FakeCloudflare
+) -> None:
+    page.goto("/")
+    card = _card(page)
+    item_id = card.get_attribute("data-item")
+    before = dorman.query("SELECT count(*) FROM votes WHERE item_id = %s", item_id)[0][0]
+
+    for hostname, action in (("evil.example", "vote"), ("127.0.0.1", "login")):
+        cloudflare.hostname, cloudflare.action = hostname, action
+        card.locator("button").first.click()
+        expect(card.locator(".split")).to_have_text("Couldn't confirm you're human. Try again.")
+        expect(card.locator("button").first).to_be_enabled()
+        assert dorman.query("SELECT count(*) FROM votes WHERE item_id = %s", item_id)[0][0] == (
+            before
+        )
+
+    cloudflare.hostname, cloudflare.action = "127.0.0.1", "vote"
+    card.locator("button").first.click()
+    expect(card.locator(".split")).to_contain_text("%")
 
 
 def test_a_batch_is_played_only_once_reviewed_and_its_markup_stays_text(

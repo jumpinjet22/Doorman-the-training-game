@@ -2,6 +2,10 @@
 //! each token. Anything short of a clear "yes" from Cloudflare fails, and
 //! anything that stops Cloudflare answering comes back `Unavailable`, which
 //! the routes also treat as a failure.
+//!
+//! With `expecting`, a pass must also name our host and the `vote` action,
+//! so a token minted on another site or for another action with the same
+//! site key is rejected.
 
 use std::net::IpAddr;
 use std::time::Duration;
@@ -13,20 +17,20 @@ use serde::Deserialize;
 pub const SITEVERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 /// A vote waits at most this long for Cloudflare before giving up.
 const TIMEOUT: Duration = Duration::from_secs(5);
+/// The widget's `data-action` on the vote form.
+pub const ACTION: &str = "vote";
 
 pub struct CloudflareVerifier {
     client: reqwest::Client,
     secret: String,
     url: String,
+    /// The host a token must have been solved on; None skips the hostname
+    /// and action checks (Cloudflare's test secrets answer for any host).
+    hostname: Option<String>,
 }
 
 impl CloudflareVerifier {
     pub fn new(secret: String) -> Self {
-        Self::with_url(secret, SITEVERIFY_URL.to_string())
-    }
-
-    /// Talks to `url` instead of Cloudflare. Tests only.
-    pub fn with_url(secret: String, url: String) -> Self {
         let client = reqwest::Client::builder()
             .timeout(TIMEOUT)
             .build()
@@ -34,8 +38,26 @@ impl CloudflareVerifier {
         Self {
             client,
             secret,
-            url,
+            url: SITEVERIFY_URL.to_string(),
+            hostname: None,
         }
+    }
+
+    /// Talks to `url` instead of Cloudflare. Tests only.
+    pub fn with_url(secret: String, url: String) -> Self {
+        Self::new(secret).at(url)
+    }
+
+    /// Talks to `url` instead of Cloudflare. Tests only.
+    pub fn at(mut self, url: String) -> Self {
+        self.url = url;
+        self
+    }
+
+    /// Only passes tokens solved on `hostname` (no port) for [`ACTION`].
+    pub fn expecting(mut self, hostname: impl Into<String>) -> Self {
+        self.hostname = Some(hostname.into());
+        self
     }
 
     async fn check(&self, token: &str, remote_ip: Option<IpAddr>) -> Verdict {
@@ -56,7 +78,15 @@ impl CloudflareVerifier {
         };
         let codes = body.error_codes.join(",");
         if body.success {
-            Verdict::Passed
+            match &self.hostname {
+                Some(host) if body.hostname.as_deref() != Some(host) => {
+                    Verdict::Rejected(format!("hostname {:?}", body.hostname))
+                }
+                Some(_) if body.action.as_deref() != Some(ACTION) => {
+                    Verdict::Rejected(format!("action {:?}", body.action))
+                }
+                _ => Verdict::Passed,
+            }
         } else if body
             .error_codes
             .iter()
@@ -82,6 +112,8 @@ struct SiteVerify {
     success: bool,
     #[serde(default, rename = "error-codes")]
     error_codes: Vec<String>,
+    hostname: Option<String>,
+    action: Option<String>,
 }
 
 impl TurnstileVerifier for CloudflareVerifier {

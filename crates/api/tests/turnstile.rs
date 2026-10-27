@@ -120,3 +120,42 @@ async fn an_unreachable_cloudflare_is_unavailable() {
         .await;
     assert!(matches!(got, Verdict::Unavailable(_)), "{got:?}");
 }
+
+/// What a real pass for our vote form looks like.
+const PASS_FOR_US: &str =
+    r#"{"success": true, "error-codes": [], "hostname": "dorman.test", "action": "vote"}"#;
+
+async fn verdict_for_us(body: &'static str) -> Verdict {
+    let (url, _) = fake_cloudflare(StatusCode::OK, body).await;
+    CloudflareVerifier::with_url("secret".into(), url)
+        .expecting("dorman.test")
+        .verify("token", None)
+        .await
+}
+
+#[tokio::test]
+async fn a_pass_must_name_our_host_and_the_vote_action() {
+    assert_eq!(verdict_for_us(PASS_FOR_US).await, Verdict::Passed);
+    for body in [
+        // Solved on another site that shares the site key.
+        r#"{"success": true, "hostname": "evil.example", "action": "vote"}"#,
+        r#"{"success": true, "hostname": "dorman.test.evil.example", "action": "vote"}"#,
+        // Solved for another action, or none.
+        r#"{"success": true, "hostname": "dorman.test", "action": "login"}"#,
+        r#"{"success": true, "hostname": "dorman.test", "action": ""}"#,
+        r#"{"success": true, "hostname": "dorman.test"}"#,
+        r#"{"success": true, "action": "vote"}"#,
+        r#"{"success": true}"#,
+    ] {
+        let got = verdict_for_us(body).await;
+        assert!(matches!(got, Verdict::Rejected(_)), "{body}: {got:?}");
+    }
+    // A failure is still a failure, whatever it names.
+    assert_eq!(
+        verdict_for_us(
+            r#"{"success": false, "error-codes": ["timeout-or-duplicate"], "hostname": "dorman.test", "action": "vote"}"#
+        )
+        .await,
+        Verdict::Rejected("timeout-or-duplicate".into())
+    );
+}
