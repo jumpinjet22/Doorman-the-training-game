@@ -43,6 +43,7 @@ struct Setup {
     limits: Limits,
     client_ip_header: Option<HeaderName>,
     verifier: Option<Arc<dyn TurnstileVerifier>>,
+    public_origin: Option<&'static str>,
 }
 
 impl Harness {
@@ -70,7 +71,7 @@ impl Harness {
             clock: clock.clone(),
             turnstile: setup.verifier.unwrap_or_else(|| turnstile.clone()),
             turnstile_site_key: SITE_KEY.into(),
-            public_origin: ORIGIN.into(),
+            public_origin: setup.public_origin.unwrap_or(ORIGIN).into(),
             client_ip_header: setup.client_ip_header,
             network_salt: network_salt(SECRET),
             limits: setup.limits,
@@ -961,6 +962,28 @@ async fn oversized_bodies_are_refused(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../db/migrations")]
+async fn hsts_is_only_sent_when_the_site_is_https(pool: PgPool) {
+    let h = Harness::with(
+        pool,
+        Setup {
+            public_origin: Some("http://127.0.0.1:8080"),
+            ..Setup::default()
+        },
+    );
+    for path in ["/", "/static/play.js", "/nope"] {
+        let response = h
+            .respond(Request::get(path).body(Body::empty()).unwrap())
+            .await;
+        let headers = response.headers();
+        assert!(
+            !headers.contains_key(header::STRICT_TRANSPORT_SECURITY),
+            "{path}"
+        );
+        assert_eq!(headers["cross-origin-opener-policy"], "same-origin");
+    }
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
 async fn every_response_carries_the_security_headers(pool: PgPool) {
     let h = Harness::new(pool);
     let items = seed_day(&h.pool, day(TODAY)).await;
@@ -996,6 +1019,16 @@ async fn every_response_carries_the_security_headers(pool: PgPool) {
         assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
         assert_eq!(headers[header::REFERRER_POLICY], "strict-origin");
         assert_eq!(headers[header::X_FRAME_OPTIONS], "DENY");
+        let permissions = headers["permissions-policy"].to_str().unwrap();
+        for feature in ["camera", "microphone", "geolocation", "payment", "usb"] {
+            assert!(
+                permissions.contains(&format!("{feature}=()")),
+                "{permissions}"
+            );
+        }
+        assert!(!permissions.contains("clipboard"), "{permissions}");
+        assert_eq!(headers["cross-origin-opener-policy"], "same-origin");
+        assert_eq!(headers["cross-origin-resource-policy"], "same-origin");
     }
     // Pages and answers are personal; the script is the same for everyone.
     let cache = |i: usize| {

@@ -8,6 +8,7 @@
 //! verified one. Votes per player and new players per network are rate
 //! limited in Postgres. See `security` for headers and the Origin check.
 
+pub mod config;
 pub mod pages;
 pub mod security;
 #[cfg(feature = "test-clock")]
@@ -75,6 +76,12 @@ impl Default for Limits {
         }
     }
 }
+
+// The cookie key and the network salt both come from DORMAN_COOKIE_SECRET
+// but are independent: different hash functions over different inputs (the
+// salt's is prefixed with its own label), so neither reveals the other or the
+// secret. Changing either derivation logs every player out or resets every
+// network's rate-limit window, so the tests pin both to known answers.
 
 /// The salt for network hashes, derived from the cookie secret so there's
 /// one fewer secret to manage.
@@ -240,6 +247,36 @@ pub fn app(state: AppState) -> Router {
             state.clone(),
             security::same_origin,
         ))
-        .layer(middleware::from_fn(security::headers))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            security::headers,
+        ))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SECRET: &str = "9f2c41d07be35a86e1f0c4b9d27a6e53";
+    /// SHA-512 of SECRET, as on day one.
+    const COOKIE_KEY_HEX: &str = "a42bd7c4d00c3a7fa69e3963fd5e4f78583a0b367efb8141754b6528a48052e26624b37373ecb6a1dbd9ffd525cbb95bdc1aadc808d173a4152c112862e5d249";
+    /// SHA-256 of "dorman network salt", a zero byte and SECRET.
+    const NETWORK_SALT_HEX: &str =
+        "dc98982e461fb483d48c46c584c4fb645295ba0c165e87efa7c3b52f909c6106";
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn the_derivations_are_independent_and_never_change() {
+        let key = cookie_key(SECRET);
+        let salt = network_salt(SECRET);
+        assert_eq!(hex(key.master()), COOKIE_KEY_HEX);
+        assert_eq!(hex(&salt), NETWORK_SALT_HEX);
+        assert!(!key.master().windows(salt.len()).any(|w| w == salt));
+        assert_ne!(hex(cookie_key("other").master()), COOKIE_KEY_HEX);
+        assert_ne!(network_salt("other"), salt);
+    }
 }

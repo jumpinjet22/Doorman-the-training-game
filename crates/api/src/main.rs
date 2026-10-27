@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::http::HeaderName;
 use clap::Parser;
+use dorman_api::config::{self, TEST_SECRETS};
 use dorman_api::turnstile::CloudflareVerifier;
 use dorman_api::{app, cookie_key, network_salt, AppState, Limits};
 use dorman_core::{Clock, SystemClock, TurnstileVerifier};
@@ -16,9 +17,19 @@ struct Args {
     database_url: String,
     #[arg(long, env = "DORMAN_BIND", default_value = "127.0.0.1:8080")]
     bind: SocketAddr,
-    /// At least 32 bytes of secret, used to sign the anonymous player cookie.
-    #[arg(long, env = "DORMAN_COOKIE_SECRET")]
-    cookie_secret: String,
+    /// At least 32 random bytes, used to sign the anonymous player cookie
+    /// and salt network hashes. Env only: hidden from --help, since a flag
+    /// shows in the process list. Prefer DORMAN_COOKIE_SECRET_FILE.
+    #[arg(
+        long,
+        env = "DORMAN_COOKIE_SECRET",
+        hide = true,
+        hide_env_values = true
+    )]
+    cookie_secret: Option<String>,
+    /// A file holding the cookie secret (e.g. a mounted secret).
+    #[arg(long, env = "DORMAN_COOKIE_SECRET_FILE")]
+    cookie_secret_file: Option<std::path::PathBuf>,
     /// Mark cookies Secure (HTTPS only). Turn off only for local http dev.
     #[arg(long, env = "DORMAN_SECURE_COOKIES", default_value_t = true, action = clap::ArgAction::Set)]
     secure_cookies: bool,
@@ -32,7 +43,7 @@ struct Args {
     turnstile_site_key: String,
     /// Cloudflare Turnstile secret. For local dev, the always-pass test
     /// secret is 1x0000000000000000000000000000000AA.
-    #[arg(long, env = "DORMAN_TURNSTILE_SECRET")]
+    #[arg(long, env = "DORMAN_TURNSTILE_SECRET", hide_env_values = true)]
     turnstile_secret: String,
     /// A header your proxy sets to the client's address (e.g. Fly-Client-IP
     /// or CF-Connecting-IP). Leave unset when clients connect directly;
@@ -49,13 +60,6 @@ struct Args {
     new_players_per_hour: i32,
 }
 
-/// Cloudflare's always-pass and always-fail test secrets.
-const TEST_SECRETS: &[&str] = &[
-    "1x0000000000000000000000000000000AA",
-    "2x0000000000000000000000000000000AA",
-    "3x0000000000000000000000000000000AA",
-];
-
 /// The real clock, or with the `test-clock` feature (end-to-end tests only),
 /// one read from the file named by `DORMAN_TEST_CLOCK_FILE`.
 fn clock() -> Arc<dyn Clock> {
@@ -68,14 +72,22 @@ fn clock() -> Arc<dyn Clock> {
 }
 
 /// Cloudflare, or with the `test-clock` feature (end-to-end tests only), a
-/// fake siteverify endpoint at `DORMAN_TEST_TURNSTILE_VERIFY_URL`.
-fn turnstile(secret: String) -> Arc<dyn TurnstileVerifier> {
+/// fake siteverify endpoint at `DORMAN_TEST_TURNSTILE_VERIFY_URL`. Tokens
+/// must name `hostname`, when given.
+fn turnstile(secret: String, hostname: Option<String>) -> Arc<dyn TurnstileVerifier> {
+    let verifier = CloudflareVerifier::new(secret);
     #[cfg(feature = "test-clock")]
-    if let Ok(url) = std::env::var("DORMAN_TEST_TURNSTILE_VERIFY_URL") {
-        tracing::warn!("checking Turnstile tokens at {url}; never do this in production");
-        return Arc::new(CloudflareVerifier::with_url(secret, url));
-    }
-    Arc::new(CloudflareVerifier::new(secret))
+    let verifier = match std::env::var("DORMAN_TEST_TURNSTILE_VERIFY_URL") {
+        Ok(url) => {
+            tracing::warn!("checking Turnstile tokens at {url}; never do this in production");
+            verifier.at(url)
+        }
+        Err(_) => verifier,
+    };
+    Arc::new(match hostname {
+        Some(host) => verifier.expecting(host),
+        None => verifier,
+    })
 }
 
 #[tokio::main]
@@ -86,36 +98,43 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let args = Args::parse();
-    anyhow::ensure!(
-        args.cookie_secret.len() >= 32,
-        "DORMAN_COOKIE_SECRET must be 32+ bytes"
-    );
+    let cookie_secret =
+        config::cookie_secret(args.cookie_secret, args.cookie_secret_file.as_deref())?;
     anyhow::ensure!(
         args.votes_per_minute > 0 && args.new_players_per_hour > 0,
         "rate limits must be positive"
     );
-    if TEST_SECRETS.contains(&args.turnstile_secret.as_str()) {
-        tracing::warn!(
-            "using a Cloudflare Turnstile test secret; fine locally, never in production"
-        );
-    }
     let public_origin = args
         .public_origin
         .unwrap_or_else(|| format!("http://{}", args.bind));
+    let origin = config::public_origin(&public_origin)?;
+    config::check_secure_cookies(&origin, args.secure_cookies)?;
+    let test_keys = config::check_turnstile_keys(
+        &args.turnstile_site_key,
+        &args.turnstile_secret,
+        &origin,
+        args.secure_cookies,
+    )?;
+    if test_keys {
+        tracing::warn!("using Cloudflare Turnstile test keys; fine locally, never in production");
+    }
+    // A test secret's answers name no real host, so only check real ones.
+    let token_host = (!TEST_SECRETS.contains(&args.turnstile_secret.as_str()))
+        .then(|| origin.host_str().unwrap_or_default().to_string());
     let pool = dorman_db::connect(&args.database_url)
         .await
         .context("connecting to Postgres")?;
     dorman_db::migrate(&pool).await?;
     let state = AppState {
         pool,
-        key: cookie_key(&args.cookie_secret),
+        key: cookie_key(&cookie_secret),
         secure_cookies: args.secure_cookies,
         clock: clock(),
-        turnstile: turnstile(args.turnstile_secret),
+        turnstile: turnstile(args.turnstile_secret, token_host),
         turnstile_site_key: args.turnstile_site_key,
         public_origin: public_origin.trim_end_matches('/').to_string(),
         client_ip_header: args.client_ip_header,
-        network_salt: network_salt(&args.cookie_secret),
+        network_salt: network_salt(&cookie_secret),
         launch_date: args.launch_date,
         limits: Limits {
             votes_per_minute: args.votes_per_minute,

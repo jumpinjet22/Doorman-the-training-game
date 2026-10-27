@@ -39,9 +39,14 @@ FIXTURE_BATCH = ROOT / "fixtures" / "batch.example.json"
 DAY = "2026-10-27"
 EXAMPLE_BATCH = json.loads(FIXTURE_BATCH.read_text(encoding="utf-8"))["batch"]
 
-# Cloudflare's documented always-pass test keys.
+# Cloudflare's documented always-pass test site key; the browser never sees
+# Cloudflare anyway. The secret is not a Cloudflare test secret, so the server
+# checks the hostname and action in each answer, as it would in production.
 TURNSTILE_SITE_KEY = "1x00000000000000000000AA"
-TURNSTILE_SECRET = "1x0000000000000000000000000000000AA"
+TURNSTILE_SECRET = "e2e-fake-turnstile-secret"
+# What the fake says each passed token was solved on and for.
+TURNSTILE_HOSTNAME = "127.0.0.1"
+TURNSTILE_ACTION = "vote"
 TURNSTILE_SCRIPT = "https://challenges.cloudflare.com/turnstile/v0/api.js*"
 # Stands in for Cloudflare's script, rendering implicitly as the real one
 # does: each `.cf-turnstile` box gets a hidden `cf-turnstile-response` input
@@ -137,10 +142,13 @@ def _free_port() -> int:
 
 @dataclass
 class FakeCloudflare:
-    """A siteverify endpoint. Passes each `e2e-pass-*` token once."""
+    """A siteverify endpoint. Passes each `e2e-pass-*` token once, naming
+    `hostname` and `action` as where it was solved."""
 
     url: str = ""
     down: bool = False
+    hostname: str = TURNSTILE_HOSTNAME
+    action: str = TURNSTILE_ACTION
     used: set[str] = field(default_factory=set)
     calls: int = 0
 
@@ -156,7 +164,12 @@ class FakeCloudflare:
         if token in self.used:
             return 200, {"success": False, "error-codes": ["timeout-or-duplicate"]}
         self.used.add(token)
-        return 200, {"success": True, "error-codes": []}
+        return 200, {
+            "success": True,
+            "error-codes": [],
+            "hostname": self.hostname,
+            "action": self.action,
+        }
 
 
 @pytest.fixture(scope="session")
@@ -238,7 +251,7 @@ def dorman(
                 **os.environ,
                 "DATABASE_URL": db_url,
                 "DORMAN_BIND": f"127.0.0.1:{port}",
-                "DORMAN_COOKIE_SECRET": "e2e-secret-e2e-secret-e2e-secret!",
+                "DORMAN_COOKIE_SECRET": "5c0e9a1f7b3d28e64a90c1f7d2b8e53a",
                 "DORMAN_SECURE_COOKIES": "false",
                 "DORMAN_TEST_CLOCK_FILE": str(clock_file),
                 "DORMAN_LAUNCH_DATE": DAY,
@@ -283,4 +296,7 @@ def _reset_clock(request) -> Iterator[None]:
     if "dorman" in request.fixturenames:
         request.getfixturevalue("dorman").set_clock(f"{DAY}T12:00:00Z")
     if "cloudflare" in request.fixturenames:
-        request.getfixturevalue("cloudflare").down = False
+        cloudflare = request.getfixturevalue("cloudflare")
+        cloudflare.down = False
+        cloudflare.hostname = TURNSTILE_HOSTNAME
+        cloudflare.action = TURNSTILE_ACTION

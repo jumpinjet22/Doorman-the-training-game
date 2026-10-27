@@ -46,6 +46,8 @@ cargo run -p dorman-ingest -- approve example-1    # ...then let it into daily s
 cargo run -p dorman-ingest -- daily --day "$(date -u +%F)"
 
 # Cloudflare's always-pass Turnstile test keys; never use them in production.
+# The server refuses them (and DORMAN_SECURE_COOKIES=false) unless the public
+# origin is localhost, 127.0.0.1 or [::1].
 DORMAN_COOKIE_SECRET=$(openssl rand -hex 32) DORMAN_SECURE_COOKIES=false \
 DORMAN_LAUNCH_DATE="$(date -u +%F)" \
 DORMAN_TURNSTILE_SITE_KEY=1x00000000000000000000AA \
@@ -68,18 +70,36 @@ ignores it.
 
 | Variable | Default | What |
 |---|---|---|
-| `DORMAN_COOKIE_SECRET` | required | 32+ bytes; signs the player cookie and salts network hashes |
+| `DORMAN_COOKIE_SECRET` or `DORMAN_COOKIE_SECRET_FILE` | one required | 32+ random bytes (`openssl rand -hex 32`); signs the player cookie and salts network hashes. Short or repetitive values are refused. Prefer the file form (e.g. a mounted secret); there is deliberately no documented CLI flag, since flags show in the process list |
 | `DORMAN_LAUNCH_DATE` | required | day 1 of the game (`YYYY-MM-DD`); day numbers on the page and share card count from it |
-| `DORMAN_TURNSTILE_SITE_KEY`, `DORMAN_TURNSTILE_SECRET` | required | Cloudflare Turnstile. If Cloudflare can't be reached, votes are refused |
-| `DORMAN_PUBLIC_ORIGIN` | `http://<bind>` | e.g. `https://example.com`; POSTs from any other `Origin` get 403 |
+| `DORMAN_TURNSTILE_SITE_KEY`, `DORMAN_TURNSTILE_SECRET` | required | Cloudflare Turnstile. If Cloudflare can't be reached, votes are refused. A token passes only if Cloudflare says it was solved on the host of `DORMAN_PUBLIC_ORIGIN` for the `vote` action. Cloudflare's test keys are refused unless the origin is local and `DORMAN_SECURE_COOKIES=false` |
+| `DORMAN_PUBLIC_ORIGIN` | `http://<bind>` | e.g. `https://example.com`; POSTs from any other `Origin` get 403. HSTS is sent only when this is https |
 | `DORMAN_CLIENT_IP_HEADER` | unset (TCP peer) | e.g. `Fly-Client-IP`; set only behind a proxy that overwrites it |
 | `DORMAN_VOTES_PER_MINUTE` | 30 | per player |
 | `DORMAN_NEW_PLAYERS_PER_HOUR` | 20 | per /24 (IPv4) or /48 (IPv6), stored as a salted hash for 24 hours |
-| `DORMAN_SECURE_COOKIES` | true | turn off only for local http |
+| `DORMAN_SECURE_COOKIES` | true | `false` is allowed only for an `http://` localhost, 127.0.0.1 or [::1] origin |
 
 Behind a proxy or load balancer, set `DORMAN_CLIENT_IP_HEADER`: without it,
 every client shares the proxy's address, so the whole site gets one network's
 allowance of new players (20 an hour by default).
+
+### Rotating the cookie secret
+
+The cookie-signing key and the network-hash salt are derived from the cookie
+secret independently (SHA-512 of the secret for the key; SHA-256 of a
+`dorman network salt` label and the secret for the salt), so leaking one
+reveals neither the other nor the secret. Both change when the secret does:
+
+- every player's cookie stops verifying, so everyone becomes a new anonymous
+  player once (their past votes stay, but their streak and results page start
+  over);
+- every network's new-player window resets, since the stored hashes no
+  longer match.
+
+So rotate only when the secret may have leaked, ideally at a quiet hour:
+write a new `openssl rand -hex 32` to the secret file (or variable) and
+restart every instance together, since instances with different secrets
+reject each other's cookies.
 
 Then, on the KNOCK box:
 
