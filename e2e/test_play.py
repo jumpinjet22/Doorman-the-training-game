@@ -70,12 +70,12 @@ def _publish(dorman: Dorman, bin_dir: Path, day: str) -> None:
     for item in batch["items"]:
         if item["mode"] == "pair":
             for reply in item["replies"]:
-                reply["knock_key"] = f"{tag}{reply['knock_key']}"
-            item["knock_key"] = ":".join(["pair", *(r["knock_key"] for r in item["replies"])])
+                reply["item_key"] = f"{tag}{reply['item_key']}"
+            item["item_key"] = ":".join(["pair", *(r["item_key"] for r in item["replies"])])
             if item["gold_answer"]:
                 item["gold_answer"] = f"{tag}{item['gold_answer']}"
         else:
-            item["knock_key"] = f"{tag}{item['knock_key']}"
+            item["item_key"] = f"{tag}{item['item_key']}"
     path = Path(dorman.clock_file).parent / f"batch-{day}.json"
     path.write_text(json.dumps(batch), encoding="utf-8")
     ingest(bin_dir, dorman.db_url, "load", str(path))
@@ -83,7 +83,7 @@ def _publish(dorman: Dorman, bin_dir: Path, day: str) -> None:
     ingest(bin_dir, dorman.db_url, "daily", "--day", day)
 
 
-def _run_scorer(dorman: Dorman, today: str, out: Path) -> None:
+def _run_scorer(dorman: Dorman, today: str) -> None:
     subprocess.run(
         [
             sys.executable,
@@ -91,8 +91,6 @@ def _run_scorer(dorman: Dorman, today: str, out: Path) -> None:
             "dorman_scorer",
             "--database-url",
             dorman.db_url,
-            "--out-dir",
-            str(out),
             "--today",
             today,
         ],
@@ -182,7 +180,7 @@ def test_the_next_morning_the_card_fills_in_and_the_streak_is_two(
 
     # The night run, then the next morning, before the next set goes up
     # (anything back in it would stay hidden).
-    _run_scorer(dorman, second, tmp_path)
+    _run_scorer(dorman, second)
     dorman.set_clock(f"{second}T08:00:00Z")
     page.goto("/yesterday")
     filled = _card_text(page)
@@ -278,7 +276,7 @@ def test_the_pages_leak_no_answers(page: Page) -> None:
     for path in ("/", "/yesterday", "/about"):
         page.goto(path)
         html = page.content()
-        for field in ("gold", "generator", "judge", "knock_key", "category_correct"):
+        for field in ("gold", "intended_intent", "item_key"):
             assert field not in html, f"{path} mentions {field}"
         assert not re.search(r"\bexample-1\b", html)
 
@@ -398,7 +396,7 @@ def test_a_batch_is_played_only_once_reviewed_and_its_markup_stays_text(
     batch["batch"] = "markup"
     items = [i for i in batch["items"] if i["mode"] == "intent" and not i["gold_answer"]][:2]
     for n, item in enumerate(items):
-        item["knock_key"] = f"markup-{n}"
+        item["item_key"] = f"markup-{n}"
         item["text"] = "<script>alert(1)</script>"
         item["scene"] = '<img src=x onerror="alert(2)">'
     batch["items"] = items
@@ -407,7 +405,7 @@ def test_a_batch_is_played_only_once_reviewed_and_its_markup_stays_text(
 
     def keys_on(day: str) -> set[str]:
         rows = dorman.query(
-            "SELECT i.knock_key FROM daily_sets d JOIN items i ON i.id = ANY (d.item_ids)"
+            "SELECT i.item_key FROM daily_sets d JOIN items i ON i.id = ANY (d.item_ids)"
             " WHERE d.day = %s",
             day,
         )

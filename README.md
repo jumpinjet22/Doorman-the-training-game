@@ -1,27 +1,27 @@
 # Dorman: Who's At The Door?
 
-A free daily web game that crowd-reviews [KNOCK](https://github.com/jumpinjet22/KNOCK)'s
-**synthetic** training data. Players guess why a visitor is at the door, or pick
+A free daily web game that crowd-reviews **synthetic** data for fine-tuning a
+doorbell-assistant model. Players guess why a visitor is at the door, or pick
 the better of two replies. Gold questions and Dawid-Skene scoring quietly turn
-trolls' votes down. Each night the crowd's verdicts go back to KNOCK as training
-reviews.
+trolls' votes down. The crowd's verdicts, with a maintainer's review, become
+the training dataset.
 
-The design lives in KNOCK at `plans/knock-game.md`. This repo is the game.
+This repo is self-contained: it makes its own data, reviews it, and exports
+it. It does not depend on any other codebase.
 
 ## How data moves
 
 ```
-KNOCK scratch box                       Dorman
-scripts/export_game_batch.py ─ batch.json ─▶ dorman-ingest load
-                                           dorman-ingest daily    (publishes a day's set)
-                                           dorman-api             (players vote)
-                                           dorman-scorer          (nightly: trust + consensus)
-scripts/import_game_consensus.py ◀─ consensus-<date>.json ─┘
+a dorman-batch file ─▶ dorman-ingest load      (pending review)
+                       dorman-ingest review/approve
+                       dorman-ingest daily      (publishes a day's set)
+                       dorman-api               (players vote)
+                       dorman-scorer            (nightly: trust + consensus, saved in Postgres)
 ```
 
-Files only, moved by a person, in both directions. KNOCK never talks to the
-game and the game never talks to KNOCK. Batches only ever come from a synthetic
-audit log; KNOCK's export script refuses anything else.
+A batch is a `dorman-batch` v1 JSON file (see `fixtures/batch.example.json`
+and `crates/core/src/batch.rs`). Everything downstream reads and writes
+Postgres; nothing is exchanged with another system.
 
 ## Layout
 
@@ -32,7 +32,7 @@ audit log; KNOCK's export script refuses anything else.
 | `crates/ingest` | `dorman-ingest`: `migrate`, `load <batch.json>`, `review`/`approve <batch>`, `daily [--day] [--gold-showings N]` (gold retires after N sets, default 5; warns when it runs low). |
 | `crates/api` | `dorman-api`: Axum server, renders pages itself (askama + vanilla JS): today's game one card at a time, results and share card, Overtime, ranks, `/leaderboard`, `/yesterday`, `/about`. |
 | `scorer/` | `dorman-scorer`: Python nightly job. Gold trust, Dawid-Skene, behavior flags, consensus. |
-| `fixtures/batch.example.json` | A real batch from KNOCK's export script, used by tests. |
+| `fixtures/batch.example.json` | An example `dorman-batch` file, used by tests. |
 
 ## Running it locally
 
@@ -54,7 +54,7 @@ DORMAN_TURNSTILE_SITE_KEY=1x00000000000000000000AA \
 DORMAN_TURNSTILE_SECRET=1x0000000000000000000000000000000AA \
   cargo run -p dorman-api          # http://127.0.0.1:8080
 
-cd scorer && pip install -e ".[dev]" && python -m dorman_scorer --out-dir exports/
+cd scorer && pip install -e ".[dev]" && python -m dorman_scorer
 ```
 
 A loaded batch is `pending` until someone runs `approve`; only approved
@@ -101,13 +101,6 @@ write a new `openssl rand -hex 32` to the secret file (or variable) and
 restart every instance together, since instances with different secrets
 reject each other's cookies.
 
-Then, on the KNOCK box:
-
-```bash
-python scripts/import_game_consensus.py exports/consensus-<date>.json \
-  --audit-log <the synthetic log> --dry-run
-```
-
 ## Tests
 
 Most suites need Postgres. Point `DATABASE_URL` at a role that can create
@@ -120,7 +113,7 @@ cargo test --all-features                     # unit, property, Postgres and HTT
 cd scorer && pytest                           # unit, property, simulation, Postgres
 cd scorer && pytest -m slow                   # large simulations (nightly)
 cd .. && pip install -r e2e/requirements.txt && playwright install chromium
-KNOCK_PATH=../KNOCK pytest e2e                # real browser + KNOCK contract
+pytest e2e                                   # real browser
 ```
 
 | Suite | Where |
@@ -133,7 +126,6 @@ KNOCK_PATH=../KNOCK pytest e2e                # real browser + KNOCK contract
 | Simulated crowds (`-m sim`) | `scorer/tests/sim.py`, `test_simulation.py` |
 | Scorer against Postgres (`-m db`) | `scorer/tests/test_db.py` |
 | Browser, accessibility (axe), leaks | `e2e/test_play.py` |
-| KNOCK export -> Dorman -> KNOCK import | `e2e/test_contract.py` (needs `KNOCK_PATH`) |
 
 The E2E server is built with the `test-clock` feature, which lets tests set
 the time through a file and point Turnstile checks at a fake Cloudflare.
@@ -165,8 +157,7 @@ fail CI the moment they start passing, so the marker gets removed with the fix.
 - An item **settles** with ≥ 5.0 total weight and either ≥ 80% weighted share,
   or a Dawid-Skene posterior ≥ 0.95 with ≥ 60% weighted share. If it hasn't
   settled 3 days after it was first shown, it's **disputed** and goes to a
-  human. A settled answer that contradicts a confident KNOCK judge is also
-  disputed.
+  human.
 - Each run is one transaction and is logged in `scoring_runs`; rerunning a
   day replaces it. `consensus.split` holds the weighted split per answer for
   the reveal page.
