@@ -2,6 +2,9 @@ from datetime import date, timedelta
 
 import numpy as np
 
+from dorman_scorer import config
+from dorman_scorer.brigade import brigaded
+from dorman_scorer.config import Config
 from dorman_scorer.consensus import consensus_file, verdict
 from dorman_scorer.dawid_skene import dawid_skene
 from dorman_scorer.flags import behavior_flags
@@ -135,3 +138,116 @@ def test_consensus_file_matches_what_knock_imports() -> None:
             "total_weight": 6.0,
         }
     ]
+
+
+def test_same_answer_to_everything_is_flagged() -> None:
+    items = [_item(n) for n in range(12)]
+    assert behavior_flags([_vote("p", i, "delivery", pos=n % 4) for n, i in enumerate(items)]) == {
+        "same_answer": 0.3
+    }
+    varied = [_vote("p", i, LABELS[n % 2], pos=n % 4) for n, i in enumerate(items)]
+    assert behavior_flags(varied) == {}
+
+
+def test_settles_on_a_confident_posterior_with_a_clear_majority() -> None:
+    item = _item(1)
+    trust = {f"p{n}": 1.0 for n in range(10)}
+    votes = [_vote(f"p{n}", item, "delivery" if n < 7 else "soliciting") for n in range(10)]
+    sure = {"delivery": 0.99, "soliciting": 0.01}
+
+    v = verdict(item, votes, trust, TODAY, posterior=sure)
+    assert (v.status, v.label, v.posterior) == ("settled", "delivery", 0.99)
+    assert v.split == {"delivery": 7.0, "soliciting": 3.0}
+    assert verdict(item, votes, trust, TODAY).status == "open"  # 70% share alone isn't enough
+    unsure = {"delivery": 0.9, "soliciting": 0.1}
+    assert verdict(item, votes, trust, TODAY, posterior=unsure).status == "open"
+    # Dawid-Skene can't settle an item the weight is split on...
+    close = [_vote(f"p{n}", item, "delivery" if n < 5 else "soliciting") for n in range(9)]
+    assert verdict(item, close, trust, TODAY, posterior=sure).status == "open"
+    # ...nor skip the weight floor or the judge guard.
+    thin = {p: 0.4 for p in trust}
+    assert verdict(item, votes, thin, TODAY, posterior=sure).status == "open"
+    judged = _item(1, judge_category_correct=1.0)
+    assert verdict(judged, votes, trust, TODAY, posterior=sure).status == "disputed"
+
+
+def test_thresholds_come_from_config() -> None:
+    item = _item(1)
+    trust = {f"p{n}": 0.5 for n in range(6)}
+    votes = [_vote(f"p{n}", item, "delivery" if n < 5 else "visitation") for n in range(6)]
+    assert verdict(item, votes, trust, TODAY).status == "open"
+    assert verdict(item, votes, trust, TODAY, config.SOFT_LAUNCH).status == "settled"
+    stale = _item(1, first_shown=TODAY - timedelta(days=1))
+    quick = config.build(dispute_after_days=1)
+    assert verdict(stale, votes, trust, TODAY, quick).status == "disputed"
+    assert config.build("soft-launch", min_weight=None, min_share=0.9).as_dict()["min_share"] == 0.9
+
+
+NEW, OLD = timedelta(hours=3), timedelta(days=30)
+
+
+def _brigade_votes(item: Item, established: list[str], burst: str, n: int = 8) -> list[Vote]:
+    votes = [Vote(f"reg{k}", item.id, a, 4000, account_age=OLD) for k, a in enumerate(established)]
+    return votes + [Vote(f"new{k}", item.id, burst, 4000, account_age=NEW) for k in range(n)]
+
+
+def test_a_burst_of_new_accounts_against_the_regulars_is_zeroed() -> None:
+    item, items = _item(1), {"item1": _item(1)}
+    trust = {f"reg{k}": 0.6 for k in range(3)}
+    votes = _brigade_votes(item, ["delivery"] * 3, "soliciting")
+    assert brigaded(items, votes, trust, Config()) == {"item1": {f"new{k}" for k in range(8)}}
+    # Every new-account vote on the item goes, not just the brigade's answer.
+    votes.append(Vote("newbie", item.id, "delivery", 4000, account_age=NEW))
+    assert "newbie" in brigaded(items, votes, trust, Config())["item1"]
+
+
+def test_bursts_that_agree_or_are_small_are_left_alone() -> None:
+    item, items = _item(1), {"item1": _item(1)}
+    trust = {f"reg{k}": 0.6 for k in range(3)}
+    agreeing = _brigade_votes(item, ["delivery"] * 3, "delivery", n=30)
+    assert brigaded(items, agreeing, trust, Config()) == {}
+    small = _brigade_votes(item, ["delivery"] * 3, "soliciting", n=7)
+    assert brigaded(items, small, trust, Config()) == {}
+    unknown_age = [Vote(f"x{k}", item.id, "soliciting", 4000) for k in range(20)]
+    assert brigaded(items, unknown_age, trust, Config()) == {}
+    gold = {"item1": _item(1, gold="delivery")}
+    assert brigaded(gold, _brigade_votes(item, [], "soliciting"), trust, Config()) == {}
+
+
+def test_a_burst_with_no_clear_established_leader_is_held_back() -> None:
+    item, items = _item(1), {"item1": _item(1)}
+    trust = {"reg0": 0.5, "reg1": 0.5}
+    alone = _brigade_votes(item, [], "delivery")
+    assert set(brigaded(items, alone, trust, Config())) == {"item1"}
+    tied = _brigade_votes(item, ["delivery", "soliciting"], "delivery")
+    assert set(brigaded(items, tied, trust, Config())) == {"item1"}
+
+
+def test_score_zeroes_a_brigade_everywhere() -> None:
+    gold = [_item(n, gold="delivery") for n in range(10)]
+    target = _item(100)
+    votes = []
+    for p in range(6):
+        votes += [Vote(f"reg{p}", g.id, "delivery", 4000, account_age=OLD) for g in gold]
+        votes.append(Vote(f"reg{p}", target.id, "visitation", 4000, account_age=OLD))
+    for b in range(40):
+        votes += [Vote(f"new{b}", g.id, "delivery", 4000, account_age=NEW) for g in gold[:3]]
+        votes.append(Vote(f"new{b}", target.id, "soliciting", 4000, account_age=NEW))
+
+    _, [v] = score([*gold, target], votes, TODAY)
+
+    assert (v.label, v.zeroed_votes, set(v.split)) == ("visitation", 40, {"visitation"})
+
+
+def test_pair_posteriors_come_back_as_reply_keys() -> None:
+    gold = [
+        _item(n, mode="pair", reply_keys=(f"r{n}a", f"r{n}b"), gold_answer=f"r{n}a")
+        for n in range(6)
+    ]
+    target = _item(100, mode="pair", reply_keys=("xa", "xb"))
+    votes = []
+    for p in range(12):
+        votes += [_vote(f"p{p}", g, g.reply_keys[0]) for g in gold]
+        votes.append(_vote(f"p{p}", target, "xb" if p < 8 else "both_bad"))
+    _, [v] = score([*gold, target], votes, TODAY)
+    assert v.label == "xb" and v.posterior is not None and v.posterior > 0.9

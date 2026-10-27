@@ -266,6 +266,12 @@ Depends on D1 and D2.
 
 - **Soft launch to friends** with gold-heavy dailies (5 gold, 4 new, 1
   carry-over) and lower settle thresholds, to build up trusted players.
+  Run the scorer with `--profile soft-launch` (or
+  `DORMAN_SCORER_PROFILE=soft-launch`): it lowers the thresholds and turns
+  brigade detection off. Under the default profile, a launch-day crowd is all
+  accounts under 48 hours old, so it would be held back as a brigade and every
+  item would end up disputed. Switch back to the default profile before the
+  public launch.
 - **Watch for a week:** settle rate, dispute rate, troll flags, and how long
   your review queue gets.
 - **Switch to the normal mix** (6/3/1) and the normal thresholds, then share
