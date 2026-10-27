@@ -1,11 +1,18 @@
 //! Shared helpers for Dorman's integration tests: seed a database from the
-//! example batch, publish days, and make players with a vote history.
+//! example batch, publish days, make players with a vote history, and stub
+//! Cloudflare Turnstile.
 //!
 //! Tests that need Postgres use `#[sqlx::test]`, which creates a fresh
 //! database per test from `DATABASE_URL` (a role allowed to create databases).
 
-use chrono::NaiveDate;
-use dorman_core::{Batch, BatchItem, BOTH_BAD};
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use chrono::{DateTime, Duration, NaiveDate, Utc};
+use dorman_core::turnstile::BoxFuture;
+use dorman_core::{Batch, BatchItem, Clock, TurnstileVerifier, Verdict, BOTH_BAD};
 use dorman_db::StoredItem;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -21,15 +28,27 @@ pub fn day(text: &str) -> NaiveDate {
     text.parse().expect("a YYYY-MM-DD date")
 }
 
-/// Loads every item in the example batch.
+/// Loads every item in the example batch, as a batch that's been reviewed.
 pub async fn load_example(pool: &PgPool) -> Batch {
-    let batch = example_batch();
+    let batch = load_pending(pool, &example_batch()).await;
+    approve(pool, &batch.batch).await;
+    batch
+}
+
+/// Loads every item in `batch`, which then waits for review.
+pub async fn load_pending(pool: &PgPool, batch: &Batch) -> Batch {
     for item in &batch.items {
         dorman_db::insert_item(pool, &batch.batch, &batch.intents, item)
             .await
             .expect("insert item");
     }
-    batch
+    batch.clone()
+}
+
+pub async fn approve(pool: &PgPool, batch: &str) {
+    dorman_db::approve_batch(pool, batch, Utc::now())
+        .await
+        .expect("approve batch");
 }
 
 /// Publishes `keys` as the set for `day` and returns the stored items.
@@ -79,4 +98,64 @@ pub async fn count(pool: &PgPool, table: &str) -> i64 {
         .fetch_one(pool)
         .await
         .expect("count rows")
+}
+
+/// How long Cloudflare honours a Turnstile token.
+pub const TOKEN_LIFETIME: Duration = Duration::minutes(5);
+
+/// A stand-in for Cloudflare: passes tokens it issued that are under five
+/// minutes old by `clock`, rejects anything else, and can be taken down.
+/// It doesn't track reuse; refusing a replayed token is the app's job.
+pub struct StubTurnstile {
+    clock: Arc<dyn Clock>,
+    issued: Mutex<HashMap<String, DateTime<Utc>>>,
+    down: AtomicBool,
+    calls: AtomicUsize,
+}
+
+impl StubTurnstile {
+    pub fn new(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            clock,
+            issued: Mutex::new(HashMap::new()),
+            down: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    /// A fresh token, as the widget in a browser would get.
+    pub fn issue(&self) -> String {
+        let mut issued = self.issued.lock().expect("stub lock");
+        let token = format!("stub-token-{}", issued.len());
+        issued.insert(token.clone(), self.clock.now());
+        token
+    }
+
+    /// Simulates Cloudflare being unreachable.
+    pub fn set_down(&self, down: bool) {
+        self.down.store(down, Ordering::SeqCst);
+    }
+
+    /// How many times anything asked it to verify a token.
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl TurnstileVerifier for StubTurnstile {
+    fn verify<'a>(&'a self, token: &'a str, _remote_ip: Option<IpAddr>) -> BoxFuture<'a, Verdict> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let verdict = if self.down.load(Ordering::SeqCst) {
+            Verdict::Unavailable("stub is down".into())
+        } else {
+            match self.issued.lock().expect("stub lock").get(token) {
+                None => Verdict::Rejected("invalid-input-response".into()),
+                Some(at) if self.clock.now() - *at > TOKEN_LIFETIME => {
+                    Verdict::Rejected("timeout-or-duplicate".into())
+                }
+                Some(_) => Verdict::Passed,
+            }
+        };
+        Box::pin(async move { verdict })
+    }
 }

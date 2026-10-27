@@ -1,0 +1,21 @@
+/* The play page. Served as a file so the CSP can forbid inline styles. */
+:root { --bg: #f6f3ee; --fg: #1d1b18; --muted: #6b655c; --card: #fff; --accent: #c2410c; --line: #e4ded4; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #171512; --fg: #f1ece4; --muted: #a39b8f; --card: #221f1b; --accent: #fb923c; --line: #37322b; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+main { max-width: 34rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+h1 { font-size: 1.6rem; margin: 0; }
+.day { color: var(--muted); margin: 0 0 1.5rem; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
+.prompt { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); margin: 0; }
+.line { font-size: 1.15rem; margin: .4rem 0; }
+.scene { color: var(--muted); font-size: .9rem; margin: 0 0 .6rem; }
+button { display: block; width: 100%; text-align: left; font: inherit; color: inherit; background: transparent;
+         border: 1px solid var(--line); border-radius: 8px; padding: .6rem .8rem; margin-top: .5rem; cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { cursor: default; opacity: .75; }
+button.mine { border-color: var(--accent); opacity: 1; }
+.split { margin-top: .6rem; font-size: .85rem; color: var(--muted); }
+.bar { height: 6px; background: var(--accent); border-radius: 3px; margin: 2px 0 6px; }

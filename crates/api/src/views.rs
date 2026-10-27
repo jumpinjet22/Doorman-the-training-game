@@ -24,6 +24,7 @@ pub struct PublicItem {
 #[template(path = "play.html")]
 pub struct PlayPage {
     pub day: String,
+    pub turnstile_site_key: String,
     pub items: Vec<PublicItem>,
 }
 
@@ -141,6 +142,7 @@ mod tests {
             .collect();
         let html = PlayPage {
             day: "2026-10-27".into(),
+            turnstile_site_key: "site-key".into(),
             items,
         }
         .render()

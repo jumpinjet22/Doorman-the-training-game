@@ -117,6 +117,7 @@ def test_a_batch_round_trips_into_training_reviews(knock, bin_dir, base_db_url, 
         ingest(bin_dir, db_url, "migrate")
         out = ingest(bin_dir, db_url, "load", str(batch_path))
         assert f"{len(batch['items'])} new items" in out
+        ingest(bin_dir, db_url, "approve", "contract")
         ingest(bin_dir, db_url, "daily", "--day", DAY)
 
         # Trusted regulars: right on gold, all agreeing the last line isn't for the door.
