@@ -316,3 +316,24 @@ def test_gold_gets_a_settled_row_but_stays_out_of_the_export_and_the_log(db_url,
     gold_keys = {i["knock_key"] for i in BATCH["items"] if i["gold_answer"]}
     assert not gold_keys & {i["knock_key"] for i in export["items"]}
     assert (items, settled) == (3, 1), "the run log counts only non-gold items"
+
+
+def test_a_run_with_the_age_check_off_says_so(db_url, tmp_path, caplog) -> None:
+    with psycopg.connect(db_url) as conn:
+        _crowd(conn, _seed(conn), n=8)
+
+    main(_args(db_url, tmp_path), environ={"DATABASE_URL": ""})
+    with psycopg.connect(db_url) as conn:
+        (warnings,) = conn.execute("SELECT warnings FROM scoring_runs").fetchone()
+    assert warnings == []
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+    main(_args(db_url, tmp_path, "--profile", "soft-launch"), environ={"DATABASE_URL": ""})
+    with psycopg.connect(db_url) as conn:
+        (warnings,) = conn.execute("SELECT warnings FROM scoring_runs").fetchone()
+    [warning] = warnings
+    assert "new_account_hours is 0" in warning
+    assert any(
+        r.levelname == "WARNING" and "new_account_hours is 0" in r.getMessage()
+        for r in caplog.records
+    )

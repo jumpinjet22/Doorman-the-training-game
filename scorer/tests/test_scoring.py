@@ -1,3 +1,4 @@
+import random
 from datetime import date, timedelta
 
 import numpy as np
@@ -253,7 +254,7 @@ def test_pair_posteriors_come_back_as_reply_keys() -> None:
     assert v.label == "xb" and v.posterior is not None and v.posterior > 0.9
 
 
-def test_gold_items_read_like_any_settled_item() -> None:
+def test_gold_items_are_decided_by_the_crowd_like_any_other_item() -> None:
     gold, plain = _item(1, gold="delivery"), _item(2)
     votes = [
         _vote("a", gold, "delivery"),
@@ -261,10 +262,41 @@ def test_gold_items_read_like_any_settled_item() -> None:
         _vote("c", gold, "soliciting"),
         _vote("a", plain, "delivery"),
     ]
-    [row] = gold_verdicts([gold, plain], votes, {"a": 1.0, "b": 2.0, "c": 1.0})
-    assert (row.item_id, row.status, row.label) == ("item1", "settled", "delivery")
-    assert row.split == {"delivery": 3.0, "soliciting": 1.0}
-    assert (row.share, row.total_weight) == (0.75, 4.0)
-    # Nobody voted yet: still settled on gold, with nothing behind it.
-    [empty] = gold_verdicts([gold], [], {})
-    assert (empty.status, empty.label, empty.share, empty.split) == ("settled", "delivery", 0.0, {})
+    trust = {"a": 2.0, "b": 2.0, "c": 1.0}
+    [row] = gold_verdicts([gold, plain], votes, trust, TODAY)
+    same = verdict(gold, votes, trust, TODAY)
+    assert (row.item_id, row.status, row.label) == ("item1", same.status, same.label)
+    assert row.split == {"delivery": 4.0, "soliciting": 1.0}
+    assert (row.share, row.total_weight) == (0.8, 5.0)
+
+    # The crowd leaning the wrong way is what the row says, never the key.
+    wrong = [_vote(p, gold, "soliciting") for p in "abc"] + [_vote("d", gold, "delivery")]
+    [row] = gold_verdicts([gold], wrong, {"a": 2.0, "b": 2.0, "c": 2.0, "d": 1.0}, TODAY)
+    assert (row.status, row.label) == ("settled", "soliciting")
+
+    # A split crowd doesn't settle, gold or not: no "settled" next to a split
+    # that disagrees with it.
+    split = [_vote("a", gold, "delivery"), _vote("b", gold, "soliciting")]
+    [row] = gold_verdicts([gold], split, {"a": 3.0, "b": 3.0}, TODAY)
+    assert row.status == "open"
+
+    # Nobody voted yet: open with nothing behind it, as any item would be.
+    [empty] = gold_verdicts([gold], [], {}, TODAY)
+    assert (empty.status, empty.label, empty.share, empty.split) == ("open", None, 0.0, {})
+
+
+def test_no_scorer_output_for_gold_carries_its_known_answer_unless_the_crowd_gave_it() -> None:
+    """Property: whatever the votes, a gold row's label is the crowd's
+    heaviest answer (or nothing), so it can only ever repeat what players
+    said, never the answer key."""
+    rng = random.Random(17)
+    labels = ["delivery", "soliciting", "visitation", "unknown"]
+    for _ in range(300):
+        gold = _item(1, gold=rng.choice(labels))
+        votes = [_vote(f"p{n}", gold, rng.choice(labels)) for n in range(rng.randint(0, 12))]
+        trust = {v.player_id: rng.uniform(0, 2) for v in votes}
+        [row] = gold_verdicts([gold], votes, trust, TODAY)
+        crowd = verdict(gold, votes, trust, TODAY)
+        assert (row.status, row.label, row.split) == (crowd.status, crowd.label, crowd.split)
+        if row.label is not None:
+            assert row.split[row.label] == max(row.split.values())

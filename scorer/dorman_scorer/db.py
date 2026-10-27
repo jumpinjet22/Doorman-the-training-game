@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 import psycopg
@@ -40,14 +40,14 @@ def load(conn: psycopg.Connection) -> tuple[list[Item], list[Vote]]:
         options[item_id] = choices
 
     votes = []
-    for player_id, item_id, answer, ms, age, daily in conn.execute(
+    for player_id, item_id, answer, ms, age, daily, joined in conn.execute(
         """SELECT v.player_id::text, v.item_id::text, v.answer, v.ms_to_answer,
-                  v.created_at - p.created_at, v.day IS NOT NULL
+                  v.created_at - p.created_at, v.day IS NOT NULL, p.created_at
            FROM votes v JOIN players p ON p.id = v.player_id"""
     ):
         choices = options.get(item_id, [])
         position = choices.index(answer) if answer in choices else None
-        votes.append(Vote(player_id, item_id, answer, ms, position, age, daily))
+        votes.append(Vote(player_id, item_id, answer, ms, position, age, daily, joined))
     return items, votes
 
 
@@ -87,6 +87,8 @@ class Run:
     brigaded: int
     export_path: str
     config: dict[str, float | int]
+    # Settings that switched a defence off for this run, in words.
+    warnings: list[str] = field(default_factory=list)
 
 
 def record_run(conn: psycopg.Connection, run: Run) -> None:
@@ -95,13 +97,14 @@ def record_run(conn: psycopg.Connection, run: Run) -> None:
     """
     conn.execute(
         """INSERT INTO scoring_runs (day, started_at, finished_at, players, items, settled,
-                                     disputed, brigaded, export_path, config)
-           VALUES (%s, now(), clock_timestamp(), %s, %s, %s, %s, %s, %s, %s)
+                                     disputed, brigaded, export_path, config, warnings)
+           VALUES (%s, now(), clock_timestamp(), %s, %s, %s, %s, %s, %s, %s, %s)
            ON CONFLICT (day) DO UPDATE SET started_at = excluded.started_at,
              finished_at = excluded.finished_at, players = excluded.players,
              items = excluded.items, settled = excluded.settled,
              disputed = excluded.disputed, brigaded = excluded.brigaded,
-             export_path = excluded.export_path, config = excluded.config""",
+             export_path = excluded.export_path, config = excluded.config,
+             warnings = excluded.warnings""",
         (
             run.day,
             run.players,
@@ -111,6 +114,7 @@ def record_run(conn: psycopg.Connection, run: Run) -> None:
             run.brigaded,
             run.export_path,
             json.dumps(run.config),
+            json.dumps(run.warnings),
         ),
     )
 
