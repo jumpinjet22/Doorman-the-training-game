@@ -26,7 +26,8 @@
       "scene": null,
       "generator_intent": "delivery_signature_required",
       "gold_answer": "delivery_signature_required",
-      "judge": null
+      "judge": null,
+      "explanation": "Needing a signature is the giveaway: it's a delivery, but one the resident has to sign for, not a plain drop-off."
     },
     {
       "knock_key": "11062a1c76b2b60c",
@@ -44,7 +45,8 @@
       "scene": null,
       "generator_intent": "religious_soliciting",
       "gold_answer": "religious_soliciting",
-      "judge": null
+      "judge": null,
+      "explanation": "\"We'd like to talk to you about\" plus a church is a religious visit, not a sale and not a delivery."
     },
     {
       "knock_key": "c0a48f8dd724cc7e",

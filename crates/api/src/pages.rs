@@ -12,8 +12,8 @@ use axum_extra::extract::cookie::SignedCookieJar;
 use chrono::{Datelike, Days, NaiveDate};
 use dorman_core::ranks::MIN_WEEKLY_SCORED;
 use dorman_core::{
-    day_number, leaderboard, next_reset, rank, score_answer, share_card, streak, Decision, Outcome,
-    Rank, Record, Standing,
+    day_number, leaderboard, next_reset, rank, score_answer, share_card, streak, tally, Confidence,
+    Decision, Outcome, Rank, Record, Standing,
 };
 use dorman_db::{StoredItem, Verdict};
 use serde::Deserialize;
@@ -21,7 +21,7 @@ use uuid::Uuid;
 
 use crate::views::{
     bars, choice_label, until, AboutPage, Bar, BoardRow, CardPage, EmptyPage, ErrorPage,
-    LeaderboardPage, Masthead, MessagePage, PublicItem, ResultRow, ResultsPage, RevealRow,
+    LeaderboardPage, Masthead, MessagePage, PublicItem, ResultRow, ResultsPage, RevealRow, SureRow,
     YesterdayPage,
 };
 use crate::{known_player, AppError, AppState};
@@ -218,6 +218,31 @@ async fn results_page(
     }
     let outcomes = outcomes(state, day, items, answers, &[]).await?;
     let streak = player_streak(state, player, day).await?;
+    let ids: Vec<Uuid> = items.iter().map(|item| item.id).collect();
+    let confidences: HashMap<Uuid, Confidence> = match player {
+        Some(player) => dorman_db::player_confidences(&state.pool, player, &ids)
+            .await?
+            .into_iter()
+            .filter_map(|(id, key)| Some((id, Confidence::parse(&key)?)))
+            .collect(),
+        None => HashMap::new(),
+    };
+    let sure = tally(
+        &items
+            .iter()
+            .zip(&outcomes)
+            .map(|(item, outcome)| (confidences.get(&item.id).copied(), *outcome))
+            .collect::<Vec<_>>(),
+    )
+    .into_iter()
+    .map(|t| SureRow {
+        label: t.confidence.label(),
+        right: t.right,
+        close: t.close,
+        wrong: t.wrong,
+        pending: t.pending,
+    })
+    .collect();
     let mut rows = Vec::new();
     for item in items {
         let mine = answers.get(&item.id).cloned();
@@ -227,6 +252,7 @@ async fn results_page(
                 .as_deref()
                 .map(|a| choice_label(&item.item, a))
                 .unwrap_or_default(),
+            sure: confidences.get(&item.id).map(|c| c.label()),
             item: PublicItem::from_stored(item, mine),
             bars,
         });
@@ -249,6 +275,7 @@ async fn results_page(
         ),
         streak,
         pending: outcomes.contains(&Outcome::Pending),
+        sure,
         rows,
     };
     Ok(Html(page.render()?).into_response())

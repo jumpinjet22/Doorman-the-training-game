@@ -1862,3 +1862,98 @@ async fn the_leaderboard_ranks_this_weeks_named_players(pool: PgPool) {
     let (_, _, page) = h.get("/leaderboard", None).await;
     assert!(page.contains("Nobody's qualified yet this week."));
 }
+
+// -- explanations and confidence ----------------------------------------------
+
+/// Today's items, with one that carries an explanation first.
+async fn items_with_explanation_first(h: &Harness) -> Vec<StoredItem> {
+    let mut items = seed_day(&h.pool, day(TODAY)).await;
+    let at = items
+        .iter()
+        .position(|item| item.item.explanation().is_some())
+        .expect("the example batch explains at least one item");
+    items.swap(0, at);
+    items
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn an_explanation_appears_only_after_the_vote(pool: PgPool) {
+    let h = Harness::new(pool);
+    let items = items_with_explanation_first(&h).await;
+    let item = &items[0];
+    let explanation = item.item.explanation().unwrap();
+    let escaped = explanation.replace('"', "&quot;").replace('\'', "&#39;");
+
+    // The card that's up first may not be this one, so check it by its page
+    // for a fresh player: no explanation text anywhere before a vote.
+    let before = h.get("/", None).await.2;
+    assert!(!before.contains("Why:"), "no explanation before voting");
+
+    let (status, cookie, body) = h.vote(None, vote_body(item, &valid_answer(item))).await;
+    assert_eq!(status, StatusCode::OK);
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["explanation"], explanation);
+
+    let (_, _, page) = h
+        .get(&format!("/?after={}", item.id), cookie.as_deref())
+        .await;
+    assert!(
+        page.contains("Why:") && (page.contains(explanation) || page.contains(&escaped)),
+        "the answered card explains itself"
+    );
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn confidence_is_stored_and_optional(pool: PgPool) {
+    let h = Harness::new(pool);
+    let items = seed_day(&h.pool, day(TODAY)).await;
+
+    let mut with = vote_body(&items[0], &valid_answer(&items[0]));
+    with["confidence"] = json!("certain");
+    let (status, cookie, _) = h.vote(None, with).await;
+    assert_eq!(status, StatusCode::OK);
+    // No confidence at all is fine too.
+    let (status, _, _) = h
+        .vote(
+            cookie.as_deref(),
+            vote_body(&items[1], &valid_answer(&items[1])),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let stored: Vec<(uuid::Uuid, Option<String>)> =
+        sqlx::query_as("SELECT item_id, confidence FROM votes ORDER BY created_at")
+            .fetch_all(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(stored[0], (items[0].id, Some("certain".to_string())));
+    assert_eq!(stored[1], (items[1].id, None));
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn an_unknown_confidence_is_refused(pool: PgPool) {
+    let h = Harness::new(pool);
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let mut body = vote_body(&items[0], &valid_answer(&items[0]));
+    body["confidence"] = json!("very");
+    let (status, _, _) = h.vote(None, body).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(count(&h.pool, "votes").await, 0);
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn the_results_page_says_how_sure_the_player_was(pool: PgPool) {
+    let h = Harness::new(pool);
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let mut cookie = None;
+    for item in &items {
+        let mut body = vote_body(item, &valid_answer(item));
+        body["confidence"] = json!("fairly");
+        let (status, new_cookie, _) = h.vote(cookie.as_deref(), body).await;
+        assert_eq!(status, StatusCode::OK);
+        cookie = cookie.or(new_cookie);
+    }
+    let (_, _, page) = h.get("/results", cookie.as_deref()).await;
+    assert!(page.contains("How sure you were"));
+    assert!(page.contains("Fairly sure"));
+}

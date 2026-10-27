@@ -20,6 +20,9 @@ pub struct PublicItem {
     pub scene: Option<String>,
     pub choices: Vec<Choice>,
     pub answered: Option<String>,
+    /// Why the answer is what it is. Set only once the item is answered, so
+    /// an unanswered card can never carry it.
+    pub explanation: Option<String>,
 }
 
 /// The day at the top of every game page: "Day 12 · 2026-10-27".
@@ -96,7 +99,18 @@ pub struct EmptyPage {
 pub struct ResultRow {
     pub item: PublicItem,
     pub mine: String,
+    /// How sure they said they were, in words.
+    pub sure: Option<&'static str>,
     pub bars: Vec<Bar>,
+}
+
+/// One line of the "how sure you were" table.
+pub struct SureRow {
+    pub label: &'static str,
+    pub right: u32,
+    pub close: u32,
+    pub wrong: u32,
+    pub pending: u32,
 }
 
 #[derive(Template)]
@@ -112,6 +126,8 @@ pub struct ResultsPage {
     pub handle: Option<String>,
     /// Whether any square is still waiting for the night's scoring.
     pub pending: bool,
+    /// Confidence against outcome; empty if they never said how sure they were.
+    pub sure: Vec<SureRow>,
 }
 
 pub struct RevealRow {
@@ -235,6 +251,11 @@ pub fn reply_order(pair: &PairItem) -> Vec<&Reply> {
         .collect()
 }
 
+fn explanation(stored: &StoredItem, answered: &Option<String>) -> Option<String> {
+    answered.as_ref()?;
+    stored.item.explanation().map(str::to_string)
+}
+
 impl PublicItem {
     pub fn from_stored(stored: &StoredItem, answered: Option<String>) -> Self {
         match &stored.item {
@@ -251,6 +272,7 @@ impl PublicItem {
                         label: intent_label(o),
                     })
                     .collect(),
+                explanation: explanation(stored, &answered),
                 answered,
             },
             BatchItem::Pair(item) => {
@@ -272,6 +294,7 @@ impl PublicItem {
                     text: item.text.clone(),
                     scene: item.scene.clone(),
                     choices,
+                    explanation: explanation(stored, &answered),
                     answered,
                 }
             }

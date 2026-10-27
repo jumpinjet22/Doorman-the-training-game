@@ -16,6 +16,10 @@
 {% endif %}
 {% endmacro %}
 
+{% macro explanation(item) %}
+{% if let Some(text) = item.explanation %}<p class="explanation"><strong>Why:</strong> {{ text }}</p>{% endif %}
+{% endmacro %}
+
 {% macro scene(item) %}
 <p class="line">&ldquo;{{ item.text }}&rdquo;</p>
 {% if let Some(scene) = item.scene %}<p class="scene">📷 {{ scene }}</p>{% endif %}

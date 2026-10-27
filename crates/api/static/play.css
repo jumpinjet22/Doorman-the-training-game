@@ -76,3 +76,9 @@ button:hover:not(:disabled) { background: color-mix(in srgb, var(--porch) 12%, t
 .next:hover { filter: brightness(1.08); }
 .line { font-weight: 500; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+.sure { border: 0; padding: 0; margin: 0 0 .5rem; display: flex; flex-wrap: wrap; gap: .3rem 1rem; }
+.sure legend { padding: 0; margin-bottom: .3rem; font-weight: 600; }
+.sure label { cursor: pointer; }
+.sure input { accent-color: var(--porch); }
+.explanation { margin: .8rem 0 0; padding: .6rem .8rem; border-radius: 8px; border-left: 3px solid var(--porch);
+               background: color-mix(in srgb, var(--porch) 10%, transparent); font-size: .95rem; }

@@ -13,7 +13,7 @@ use axum_extra::extract::cookie::{Cookie, SameSite, SignedCookieJar};
 use chrono::Duration;
 use dorman_core::limits::{network_key, seconds_left, window_start};
 use dorman_core::turnstile::plausible_token;
-use dorman_core::{BatchItem, Verdict};
+use dorman_core::{BatchItem, Confidence, Verdict};
 use dorman_db::StoredItem;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -183,6 +183,8 @@ pub struct Ballot {
     pub answer: String,
     pub ms_to_answer: i64,
     pub token: String,
+    /// "unsure", "fairly" or "certain"; the player may leave it out.
+    pub confidence: Option<String>,
 }
 
 /// A vote that was taken.
@@ -230,6 +232,14 @@ async fn cast(
         };
         item
     };
+    if ballot
+        .confidence
+        .as_deref()
+        .is_some_and(|c| Confidence::parse(c).is_none())
+    {
+        let refusal = Refusal::new(StatusCode::UNPROCESSABLE_ENTITY, "Not a confidence level.");
+        return Ok((Err(refusal), jar));
+    }
     let valid = match &item.item {
         BatchItem::Intent(_) => item.options.contains(&ballot.answer),
         BatchItem::Pair(_) => item.item.accepts(&ballot.answer, &[]),
@@ -253,8 +263,16 @@ async fn cast(
     let ms = ballot.ms_to_answer.clamp(0, MAX_MS_TO_ANSWER.into()) as i32;
     // Overtime answers belong to no day.
     let vote_day = (!ballot.overtime).then_some(day);
-    let recorded =
-        dorman_db::record_vote(&state.pool, player, item.id, vote_day, &ballot.answer, ms).await?;
+    let recorded = dorman_db::record_vote_with_confidence(
+        &state.pool,
+        player,
+        item.id,
+        vote_day,
+        &ballot.answer,
+        ms,
+        ballot.confidence.as_deref(),
+    )
+    .await?;
     let remaining = if ballot.overtime {
         None
     } else {
@@ -280,6 +298,8 @@ pub struct VoteRequest {
     turnstile_token: String,
     #[serde(default)]
     overtime: bool,
+    #[serde(default)]
+    confidence: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -295,6 +315,9 @@ struct VoteResponse {
     /// Null in Overtime, which never runs out the same way.
     remaining: Option<usize>,
     split: Vec<SplitRow>,
+    /// Why the answer is what it is, if the item says. Sent only now that
+    /// the vote is in.
+    explanation: Option<String>,
 }
 
 /// `POST /api/vote`, from `play.js`: answers with the live split.
@@ -310,6 +333,7 @@ pub async fn vote_json(
         answer: request.answer,
         ms_to_answer: request.ms_to_answer.into(),
         token: request.turnstile_token,
+        confidence: request.confidence,
     };
     let (taken, jar) = match cast(&state, jar, ip, ballot).await? {
         (Ok(taken), jar) => (taken, jar),
@@ -328,6 +352,7 @@ pub async fn vote_json(
         recorded: taken.recorded,
         remaining: taken.remaining,
         split,
+        explanation: taken.item.item.explanation().map(str::to_string),
     };
     Ok((jar, Json(response)).into_response())
 }
@@ -343,6 +368,8 @@ pub struct VoteForm {
     turnstile_token: String,
     /// Present, as "1", on an Overtime card.
     overtime: Option<String>,
+    /// The radio group sends nothing when the player skips it.
+    confidence: Option<String>,
 }
 
 /// `POST /vote`: the same vote as a plain form post, for when `play.js`
@@ -361,6 +388,7 @@ pub async fn vote_form(
         answer: form.answer,
         ms_to_answer: now.saturating_sub(form.shown_at),
         token: form.turnstile_token,
+        confidence: form.confidence.filter(|c| !c.is_empty()),
     };
     match cast(&state, jar, ip, ballot).await? {
         (Ok(taken), jar) => {

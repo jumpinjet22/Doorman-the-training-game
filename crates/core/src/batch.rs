@@ -10,6 +10,8 @@ pub const BATCH_FORMAT: &str = "knock-game-batch";
 pub const BATCH_VERSION: u32 = 1;
 /// A pair item's answer when neither reply is any good.
 pub const BOTH_BAD: &str = "both_bad";
+/// The longest explanation an item may carry.
+pub const MAX_EXPLANATION_CHARS: usize = 400;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Batch {
@@ -35,6 +37,9 @@ pub struct IntentItem {
     pub generator_intent: String,
     pub gold_answer: Option<String>,
     pub judge: Option<Judge>,
+    /// Why the answer is what it is; shown only after a player has voted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -45,6 +50,9 @@ pub struct PairItem {
     pub generator_intent: String,
     pub gold_answer: Option<String>,
     pub replies: Vec<Reply>,
+    /// Why the answer is what it is; shown only after a player has voted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -97,6 +105,13 @@ impl BatchItem {
         }
     }
 
+    pub fn explanation(&self) -> Option<&str> {
+        match self {
+            BatchItem::Intent(item) => item.explanation.as_deref(),
+            BatchItem::Pair(item) => item.explanation.as_deref(),
+        }
+    }
+
     /// Whether `answer` is something a player could legitimately submit for
     /// this item. Intent options are checked separately, against the options
     /// the player was actually shown.
@@ -128,6 +143,12 @@ impl Batch {
             let bad = |why: &str| Err(BatchError::Item(key.to_string(), why.to_string()));
             if !seen.insert(key) {
                 return bad("duplicate knock_key");
+            }
+            if item
+                .explanation()
+                .is_some_and(|text| text.chars().count() > MAX_EXPLANATION_CHARS)
+            {
+                return bad("explanation is too long");
             }
             match item {
                 BatchItem::Intent(intent) => {
