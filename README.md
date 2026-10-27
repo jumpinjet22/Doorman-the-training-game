@@ -69,6 +69,10 @@ batches feed daily sets.
 | `DORMAN_NEW_PLAYERS_PER_HOUR` | 20 | per /24 (IPv4) or /48 (IPv6), stored as a salted hash for 24 hours |
 | `DORMAN_SECURE_COOKIES` | true | turn off only for local http |
 
+Behind a proxy or load balancer, set `DORMAN_CLIENT_IP_HEADER`: without it,
+every client shares the proxy's address, so the whole site gets one network's
+allowance of new players (20 an hour by default).
+
 Then, on the KNOCK box:
 
 ```bash
