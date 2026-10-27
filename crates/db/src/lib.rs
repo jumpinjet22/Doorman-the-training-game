@@ -646,6 +646,34 @@ pub async fn weekly_standings(
         .collect()
 }
 
+/// (handle, days played, settled answers, matching answers) for every player
+/// with a handle: what the board needs to put each one in a rank tier.
+pub async fn handle_records(pool: &PgPool) -> Result<Vec<(String, i64, i64, i64)>, Error> {
+    let rows = sqlx::query(
+        "SELECT p.handle,
+                (SELECT count(*) FROM player_days d WHERE d.player_id = p.id AND d.completed) AS days,
+                count(c.item_id) AS scored,
+                count(c.item_id) FILTER (WHERE v.answer = c.label) AS right_answers
+         FROM players p
+         LEFT JOIN votes v ON v.player_id = p.id
+         LEFT JOIN consensus c ON c.item_id = v.item_id AND c.status = 'settled' AND c.label IS NOT NULL
+         WHERE p.handle IS NOT NULL
+         GROUP BY p.id",
+    )
+    .fetch_all(pool)
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok((
+                row.try_get("handle")?,
+                row.try_get("days")?,
+                row.try_get("scored")?,
+                row.try_get("right_answers")?,
+            ))
+        })
+        .collect()
+}
+
 pub async fn handle(pool: &PgPool, player_id: Uuid) -> Result<Option<String>, Error> {
     sqlx::query_scalar("SELECT handle FROM players WHERE id = $1")
         .bind(player_id)

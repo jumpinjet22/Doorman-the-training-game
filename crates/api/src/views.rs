@@ -120,14 +120,13 @@ pub struct ResultsPage {
     pub rows: Vec<ResultRow>,
     pub card: String,
     pub streak: u32,
-    /// The player's rank's name.
-    pub rank: Option<&'static str>,
     /// Their leaderboard name, if they've picked one.
     pub handle: Option<String>,
     /// Whether any square is still waiting for the night's scoring.
     pub pending: bool,
     /// Confidence against outcome; empty if they never said how sure they were.
     pub sure: Vec<SureRow>,
+    pub progress: Option<Progress>,
 }
 
 pub struct RevealRow {
@@ -164,6 +163,21 @@ pub struct MessagePage {
     pub link: (&'static str, &'static str),
 }
 
+/// One rank's board: players are compared with others of their own rank.
+pub struct Tier {
+    pub rank: &'static str,
+    pub rows: Vec<BoardRow>,
+}
+
+/// Where a player stands, in words.
+pub struct Progress {
+    pub rank: &'static str,
+    /// "72% of 31 settled answers", or None before any have settled.
+    pub accuracy: Option<String>,
+    /// What the next rank needs, e.g. "Bouncer: 4 more days and 75% accuracy".
+    pub next: Option<String>,
+}
+
 pub struct BoardRow {
     pub place: usize,
     pub handle: String,
@@ -176,7 +190,7 @@ pub struct BoardRow {
 pub struct LeaderboardPage {
     pub week_of: String,
     pub minimum: u32,
-    pub rows: Vec<BoardRow>,
+    pub tiers: Vec<Tier>,
 }
 
 #[derive(Template)]

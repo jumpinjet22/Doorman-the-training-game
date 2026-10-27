@@ -15,7 +15,7 @@ pub use calendar::{day_number, next_reset, streak};
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use confidence::{tally, Confidence, Tally};
 pub use daily::{intent_options, pick_daily_set, DailyPlan};
-pub use ranks::{leaderboard, rank, Rank, Record, Standing};
+pub use ranks::{leaderboard, next_rank, rank, NextRank, Rank, Record, Standing};
 pub use share::{score_answer, share_card, Decision, Outcome};
 pub use turnstile::{TurnstileVerifier, Verdict};
 

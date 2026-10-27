@@ -16,7 +16,11 @@
 <section aria-labelledby="more-heading">
   <h2 id="more-heading">Keep going</h2>
   <p><a class="overtime" href="/overtime">Play Overtime</a>: more cards from earlier days, for as long as you like.</p>
-  {% if let Some(rank) = rank %}<p>Your rank: <strong>{{ rank }}</strong>. Ranks go up with accurate answers over more days, never with how many you give.</p>{% endif %}
+  {% if let Some(p) = progress %}
+  <p>Your rank: <strong>{{ p.rank }}</strong>{% if let Some(a) = p.accuracy %} &middot; {{ a }}{% endif %}.</p>
+  {% if let Some(next) = p.next %}<p>Next up &mdash; {{ next }}.</p>{% endif %}
+  <p class="hint">Ranks go up with accurate answers over more days, never with how many you give.</p>
+  {% endif %}
   {% match handle %}
   {% when Some with (name) %}
   <p>You're <strong>{{ name }}</strong> on the <a href="/leaderboard">weekly leaderboard</a>.</p>

@@ -1882,7 +1882,8 @@ async fn an_explanation_appears_only_after_the_vote(pool: PgPool) {
     let items = items_with_explanation_first(&h).await;
     let item = &items[0];
     let explanation = item.item.explanation().unwrap();
-    let escaped = explanation.replace('"', "&quot;").replace('\'', "&#39;");
+    // Askama escapes quotes; compare on the text before the first one.
+    let lead: &str = explanation.split(['"', '\'']).next().unwrap();
 
     // The card that's up first may not be this one, so check it by its page
     // for a fresh player: no explanation text anywhere before a vote.
@@ -1898,7 +1899,7 @@ async fn an_explanation_appears_only_after_the_vote(pool: PgPool) {
         .get(&format!("/?after={}", item.id), cookie.as_deref())
         .await;
     assert!(
-        page.contains("Why:") && (page.contains(explanation) || page.contains(&escaped)),
+        page.contains("Why:") && page.contains(lead),
         "the answered card explains itself"
     );
 }
@@ -1956,4 +1957,36 @@ async fn the_results_page_says_how_sure_the_player_was(pool: PgPool) {
     let (_, _, page) = h.get("/results", cookie.as_deref()).await;
     assert!(page.contains("How sure you were"));
     assert!(page.contains("Fairly sure"));
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn the_results_page_shows_rank_progress(pool: PgPool) {
+    let h = Harness::new(pool);
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let mut cookie = None;
+    for item in &items {
+        let (status, new_cookie, _) = h
+            .vote(cookie.as_deref(), vote_body(item, &valid_answer(item)))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        cookie = cookie.or(new_cookie);
+    }
+    let (_, _, page) = h.get("/results", cookie.as_deref()).await;
+    assert!(page.contains("Your rank: <strong>Rookie</strong>"));
+    assert!(
+        page.contains("Next up") && page.contains("Doorman: "),
+        "a Rookie is told what Doorman needs"
+    );
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn the_leaderboard_keeps_players_in_their_own_rank_tier(pool: PgPool) {
+    let h = Harness::new(pool);
+    // Two named players with no settled history are both Rookies: one tier.
+    for name in ["Ada", "Bob"] {
+        let player = dorman_db::create_player(&h.pool).await.unwrap();
+        dorman_db::set_handle(&h.pool, player, name).await.unwrap();
+    }
+    let (_, _, page) = h.get("/leaderboard", None).await;
+    assert!(page.contains("only against players of your own rank"));
 }

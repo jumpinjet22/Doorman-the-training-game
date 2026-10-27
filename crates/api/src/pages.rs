@@ -12,8 +12,8 @@ use axum_extra::extract::cookie::SignedCookieJar;
 use chrono::{Datelike, Days, NaiveDate};
 use dorman_core::ranks::MIN_WEEKLY_SCORED;
 use dorman_core::{
-    day_number, leaderboard, next_reset, rank, score_answer, share_card, streak, tally, Confidence,
-    Decision, Outcome, Rank, Record, Standing,
+    day_number, leaderboard, next_rank, next_reset, rank, score_answer, share_card, streak, tally,
+    Confidence, Decision, Outcome, Rank, Record, Standing,
 };
 use dorman_db::{StoredItem, Verdict};
 use serde::Deserialize;
@@ -21,8 +21,8 @@ use uuid::Uuid;
 
 use crate::views::{
     bars, choice_label, until, AboutPage, Bar, BoardRow, CardPage, EmptyPage, ErrorPage,
-    LeaderboardPage, Masthead, MessagePage, PublicItem, ResultRow, ResultsPage, RevealRow, SureRow,
-    YesterdayPage,
+    LeaderboardPage, Masthead, MessagePage, Progress, PublicItem, ResultRow, ResultsPage,
+    RevealRow, SureRow, Tier, YesterdayPage,
 };
 use crate::{known_player, AppError, AppState};
 
@@ -257,16 +257,16 @@ async fn results_page(
             bars,
         });
     }
-    let (rank, handle) = match player {
+    let (progress, handle) = match player {
         Some(player) => (
-            Some(player_rank(state, player).await?.name()),
+            Some(progress(player_record(state, player).await?)),
             dorman_db::handle(&state.pool, player).await?,
         ),
         None => (None, None),
     };
     let page = ResultsPage {
         masthead: masthead(state, day),
-        rank,
+        progress,
         handle,
         card: share_card(
             day_number(state.launch_date, day).unwrap_or(0),
@@ -371,14 +371,57 @@ pub async fn yesterday(
     Ok(Html(page.render()?).into_response())
 }
 
-async fn player_rank(state: &AppState, player: Uuid) -> Result<Rank, AppError> {
+async fn player_record(state: &AppState, player: Uuid) -> Result<Record, AppError> {
     let (days, scored, right) = dorman_db::player_record(&state.pool, player).await?;
+    Ok(record_of(days, scored, right))
+}
+
+fn record_of(days: i64, scored: i64, right: i64) -> Record {
     let count = |n: i64| u32::try_from(n).unwrap_or(u32::MAX);
-    Ok(rank(Record {
+    Record {
         days: count(days),
         scored: count(scored),
         right: count(right),
-    }))
+    }
+}
+
+/// A player's rank and what the next one needs, in words.
+fn progress(record: Record) -> Progress {
+    let next = next_rank(record).map(|n| {
+        let mut needs = Vec::new();
+        if n.days_to_go > 0 {
+            needs.push(format!(
+                "{} more day{}",
+                n.days_to_go,
+                if n.days_to_go == 1 { "" } else { "s" }
+            ));
+        }
+        if n.answers_to_go > 0 {
+            needs.push(format!("{} more settled answers", n.answers_to_go));
+        } else if !n.accuracy_met {
+            needs.push(format!("{}% accuracy", n.accuracy_percent));
+        }
+        if needs.is_empty() {
+            format!(
+                "{}: keep your accuracy at {}%",
+                n.rank.name(),
+                n.accuracy_percent
+            )
+        } else {
+            format!("{}: {}", n.rank.name(), needs.join(" and "))
+        }
+    });
+    Progress {
+        rank: rank(record).name(),
+        accuracy: (record.scored > 0).then(|| {
+            format!(
+                "{}% of {} settled answers",
+                (100.0 * record.accuracy()).round() as u32,
+                record.scored
+            )
+        }),
+        next,
+    }
 }
 
 /// `GET /overtime`: endless play once today's set is done, from items
@@ -480,20 +523,42 @@ pub async fn leaderboard_page(State(state): State<AppState>) -> Result<Response,
             flagged,
         })
         .collect();
-    let rows = leaderboard(standings)
+    // Players are compared with others of their own rank, highest rank first.
+    let ranks: HashMap<String, Rank> = dorman_db::handle_records(&state.pool)
+        .await?
         .into_iter()
-        .enumerate()
-        .map(|(n, s)| BoardRow {
-            place: n + 1,
-            percent: (100.0 * f64::from(s.right) / f64::from(s.scored)).round() as u32,
-            handle: s.handle,
-            scored: s.scored,
-        })
+        .map(|(handle, days, scored, right)| (handle, rank(record_of(days, scored, right))))
         .collect();
+    let board = leaderboard(standings);
+    let tiers = [
+        Rank::HeadOfSecurity,
+        Rank::Bouncer,
+        Rank::Doorman,
+        Rank::Rookie,
+    ]
+    .into_iter()
+    .filter_map(|tier| {
+        let rows: Vec<BoardRow> = board
+            .iter()
+            .filter(|s| ranks.get(&s.handle).copied().unwrap_or(Rank::Rookie) == tier)
+            .enumerate()
+            .map(|(n, s)| BoardRow {
+                place: n + 1,
+                percent: (100.0 * f64::from(s.right) / f64::from(s.scored)).round() as u32,
+                handle: s.handle.clone(),
+                scored: s.scored,
+            })
+            .collect();
+        (!rows.is_empty()).then_some(Tier {
+            rank: tier.name(),
+            rows,
+        })
+    })
+    .collect();
     let page = LeaderboardPage {
         week_of: monday.to_string(),
         minimum: MIN_WEEKLY_SCORED,
-        rows,
+        tiers,
     };
     Ok(Html(page.render()?).into_response())
 }
