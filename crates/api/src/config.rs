@@ -164,15 +164,19 @@ mod tests {
         assert!(check_turnstile_keys(real.0, PASS_SECRET, &origin(LOCAL)).unwrap());
         // A test secret or a test site key on a real origin, or over https
         // (a production setting), is refused.
-        for (key, secret) in [
+        // Failure messages name the case, never the secret.
+        for (case, (key, secret)) in [
             (PASS_KEY, PASS_SECRET),
             (PASS_KEY, real.1),
             (real.0, PASS_SECRET),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             for url in [PROD, "http://example.com", "https://localhost"] {
                 assert!(
                     check_turnstile_keys(key, secret, &origin(url)).is_err(),
-                    "{key} {secret} {url}"
+                    "case {case} at {url}"
                 );
             }
         }
@@ -189,14 +193,17 @@ mod tests {
 
     #[test]
     fn random_secrets_pass() {
-        for secret in [
+        for (case, secret) in [
             // `openssl rand -hex 16`, `-hex 32` and `-base64 32`.
             "9f2c41d07be35a86e1f0c4b9d27a6e53",
             "4b1e9d7c02a85f36e9c1d40b7a28f5e3c6d91b04e7f2a85c3d60b9e17f4a2c58",
             "q7Vd2kP9xJmZ4rT1bW8nY3cH6sL0fA5gE2uK9oI4pRw=",
             "correct horse battery staple, moonlit kettle drum",
-        ] {
-            assert!(check_cookie_secret(secret).is_ok(), "{secret}");
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert!(check_cookie_secret(secret).is_ok(), "case {case}");
         }
     }
 
