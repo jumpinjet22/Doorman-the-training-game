@@ -101,11 +101,13 @@ mod properties {
 
         #[test]
         fn the_key_depends_only_on_the_slash_24_and_the_salt(
-            a in any::<[u8; 4]>(), b in any::<[u8; 4]>(), salt in any::<[u8; 16]>(),
+            a in any::<[u8; 4]>(), b in any::<[u8; 4]>(),
+            salt in any::<[u8; 16]>(), other in any::<[u8; 16]>(),
         ) {
             let key = |octets: [u8; 4], salt: &[u8]| network_key(salt, Ipv4Addr::from(octets).into());
             prop_assert_eq!(key(a, &salt) == key(b, &salt), a[..3] == b[..3]);
-            prop_assert_ne!(key(a, &salt), key(a, b"another salt"));
+            prop_assume!(salt != other);
+            prop_assert_ne!(key(a, &salt), key(a, &other));
         }
     }
 }
