@@ -2,14 +2,20 @@
 //!
 //!     dorman-ingest migrate
 //!     dorman-ingest load batch.json
+//!     dorman-ingest review <batch>               # print every item for a skim
+//!     dorman-ingest approve <batch>              # let it into daily sets
 //!     dorman-ingest daily [--day 2026-10-28]     # default: tomorrow (UTC)
+//!
+//! A loaded batch is pending until approved; only approved batches feed
+//! daily sets.
 
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use chrono::{Days, NaiveDate, Utc};
 use clap::{Parser, Subcommand};
-use dorman_core::{pick_daily_set, Batch, DailyPlan};
+use dorman_core::{pick_daily_set, Batch, BatchItem, DailyPlan};
+use dorman_db::StoredItem;
 
 #[derive(Parser)]
 #[command(about = "Load KNOCK batches and publish daily sets")]
@@ -24,8 +30,12 @@ struct Cli {
 enum Command {
     /// Apply database migrations.
     Migrate,
-    /// Load a batch.json from KNOCK's export_game_batch.py.
+    /// Load a batch.json from KNOCK's export_game_batch.py. It starts pending.
     Load { path: PathBuf },
+    /// Print every item in a loaded batch, for a person to skim.
+    Review { batch: String },
+    /// Make a reviewed batch eligible for daily sets.
+    Approve { batch: String },
     /// Pick and publish the daily set for a day.
     Daily {
         #[arg(long)]
@@ -60,6 +70,33 @@ async fn main() -> Result<()> {
                 batch.batch,
                 batch.items.len() - added
             );
+            if dorman_db::batch_status(&pool, &batch.batch)
+                .await?
+                .as_deref()
+                == Some("pending")
+            {
+                println!(
+                    "It's pending review: `dorman-ingest review {0}`, then `approve {0}`.",
+                    batch.batch
+                );
+            }
+        }
+        Command::Review { batch } => {
+            let Some(status) = dorman_db::batch_status(&pool, &batch).await? else {
+                bail!("no batch called {batch:?} is loaded");
+            };
+            let items = dorman_db::batch_items(&pool, &batch).await?;
+            print!("{}", review(&batch, &status, &items));
+        }
+        Command::Approve { batch } => {
+            if dorman_db::approve_batch(&pool, &batch, Utc::now()).await? {
+                println!("Approved {batch}; its items can now go into daily sets.");
+            } else {
+                match dorman_db::batch_status(&pool, &batch).await? {
+                    Some(_) => println!("{batch} was already approved."),
+                    None => bail!("no batch called {batch:?} is loaded"),
+                }
+            }
         }
         Command::Daily { day } => {
             let day = day.unwrap_or_else(|| Utc::now().date_naive() + Days::new(1));
@@ -74,7 +111,7 @@ async fn main() -> Result<()> {
                 &pools.carry_over,
             );
             if keys.is_empty() {
-                bail!("no items to publish for {day}; load a batch first");
+                bail!("no items to publish for {day}; load and approve a batch first");
             }
             dorman_db::set_daily(&pool, day, &keys).await?;
             println!(
@@ -93,4 +130,98 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Everything a reviewer needs to skim a batch: each item as a player would
+/// see it, plus what KNOCK thinks the answer is.
+fn review(batch: &str, status: &str, items: &[StoredItem]) -> String {
+    let mut out = format!("Batch {batch}: {} items, {status}.\n", items.len());
+    for (n, stored) in items.iter().enumerate() {
+        let (mode, text, scene, generator, gold) = match &stored.item {
+            BatchItem::Intent(i) => (
+                "intent",
+                &i.text,
+                &i.scene,
+                &i.generator_intent,
+                &i.gold_answer,
+            ),
+            BatchItem::Pair(p) => (
+                "pair",
+                &p.text,
+                &p.scene,
+                &p.generator_intent,
+                &p.gold_answer,
+            ),
+        };
+        out += &format!(
+            "\n[{}/{}] {mode} {}\n",
+            n + 1,
+            items.len(),
+            stored.knock_key
+        );
+        out += &format!("  visitor: \u{201c}{text}\u{201d}\n");
+        if let Some(scene) = scene {
+            out += &format!("  scene:   {scene}\n");
+        }
+        out += &format!("  intent:  {generator}\n");
+        match &stored.item {
+            BatchItem::Intent(item) => {
+                out += &format!("  options: {}\n", stored.options.join(", "));
+                if item.judge.as_ref().is_some_and(|j| j.safety_veto) {
+                    out += "  !! the judges vetoed this line on safety\n";
+                }
+            }
+            BatchItem::Pair(pair) => {
+                for (reply, letter) in pair.replies.iter().zip(["A", "B"]) {
+                    out += &format!("  reply {letter}: \u{201c}{}\u{201d}\n", reply.text);
+                    if reply.judge.as_ref().is_some_and(|j| j.safety_veto) {
+                        out += &format!("  !! the judges vetoed reply {letter} on safety\n");
+                    }
+                }
+            }
+        }
+        if let Some(gold) = gold {
+            out += &format!("  gold:    {gold}\n");
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const EXAMPLE: &str = include_str!("../../../fixtures/batch.example.json");
+
+    #[test]
+    fn a_review_shows_every_item_in_full() {
+        let batch = Batch::parse(EXAMPLE).unwrap();
+        let items: Vec<StoredItem> = batch
+            .items
+            .iter()
+            .map(|item| StoredItem {
+                id: uuid::Uuid::nil(),
+                knock_key: item.knock_key().into(),
+                item: item.clone(),
+                options: Vec::new(),
+            })
+            .collect();
+        let text = review(&batch.batch, "pending", &items);
+        assert!(text.starts_with(&format!(
+            "Batch {}: {} items, pending.",
+            batch.batch,
+            items.len()
+        )));
+        for item in &batch.items {
+            assert!(text.contains(item.knock_key()));
+            let line = match item {
+                BatchItem::Intent(i) => &i.text,
+                BatchItem::Pair(p) => &p.text,
+            };
+            assert!(text.contains(line.as_str()), "missing {line}");
+            if let BatchItem::Pair(pair) = item {
+                assert!(pair.replies.iter().all(|r| text.contains(&r.text)));
+            }
+        }
+    }
 }

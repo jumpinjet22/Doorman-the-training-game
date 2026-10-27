@@ -125,6 +125,7 @@ def test_a_batch_round_trips_into_training_reviews(knock, bin_dir, base_db_url, 
         ingest(bin_dir, db_url, "migrate")
         out = ingest(bin_dir, db_url, "load", str(batch_path))
         assert f"{len(batch['items'])} new items" in out
+        ingest(bin_dir, db_url, "approve", "contract")
         ingest(bin_dir, db_url, "daily", "--day", DAY)
 
         # Trusted regulars (accounts a month old, so not a brigade): right on
@@ -185,6 +186,7 @@ def test_tomorrows_carry_over_is_todays_least_settled_item(bin_dir, base_db_url,
     try:
         ingest(bin_dir, db_url, "migrate")
         ingest(bin_dir, db_url, "load", str(FIXTURE_BATCH))
+        ingest(bin_dir, db_url, "approve", batch["batch"])
         ingest(bin_dir, db_url, "daily", "--day", DAY)
         with psycopg.connect(db_url) as conn:
             items = dict(conn.execute("SELECT knock_key, id FROM items").fetchall())

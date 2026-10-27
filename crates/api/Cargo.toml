@@ -14,6 +14,7 @@ axum.workspace = true
 axum-extra.workspace = true
 chrono.workspace = true
 clap.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -24,7 +25,8 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [features]
-# Lets end-to-end tests set the time through a file. Never enable in production.
+# Lets end-to-end tests set the time through a file and send Turnstile checks
+# to a fake Cloudflare. Never enable in production.
 test-clock = []
 
 [dev-dependencies]
