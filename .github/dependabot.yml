@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Only Actions for now -- add the game's package ecosystem (npm, pip,
+  # nuget, ...) here once there's a manifest for Dependabot to read.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

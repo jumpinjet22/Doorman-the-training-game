@@ -1,0 +1,19 @@
+name: pr-labeler
+
+# pull_request_target so fork PRs get a token that can write labels. Safe
+# here because the job never checks out or runs the PR's code -- the labeler
+# only reads the changed-file list through the API.
+on:
+  pull_request_target:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v7
+        with:
+          sync-labels: true
