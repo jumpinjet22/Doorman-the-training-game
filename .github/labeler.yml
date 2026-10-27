@@ -1,0 +1,28 @@
+# Labels pull requests by the files they change (actions/labeler).
+'area: core':
+  - changed-files:
+      - any-glob-to-any-file: 'crates/core/**'
+'area: db':
+  - changed-files:
+      - any-glob-to-any-file: 'crates/db/**'
+'area: ingest':
+  - changed-files:
+      - any-glob-to-any-file: ['crates/ingest/**', 'fixtures/**']
+'area: api':
+  - changed-files:
+      - any-glob-to-any-file: 'crates/api/**'
+'area: web':
+  - changed-files:
+      - any-glob-to-any-file: ['crates/api/static/**', 'crates/api/templates/**']
+'area: scorer':
+  - changed-files:
+      - any-glob-to-any-file: 'scorer/**'
+'area: docs':
+  - changed-files:
+      - any-glob-to-any-file: ['docs/**', 'plans/**', '**/*.md']
+'tests':
+  - changed-files:
+      - any-glob-to-any-file: ['crates/testkit/**', 'crates/*/tests/**', 'scorer/tests/**', 'e2e/**']
+'ci':
+  - changed-files:
+      - any-glob-to-any-file: '.github/**'

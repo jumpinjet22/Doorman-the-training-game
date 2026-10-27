@@ -1,0 +1,15 @@
+# Maps the "Affected area" / "Area" dropdowns in the issue forms to labels.
+# Each regex matches one exact dropdown option as an item in the
+# comma-separated answer line GitHub renders into the issue body.
+'area: web':
+  - '(^|\n)([^\n]*, )?Gameplay / play page(, [^\n]*)?(\r?\n|$)'
+'area: api':
+  - '(^|\n)([^\n]*, )?API / server(, [^\n]*)?(\r?\n|$)'
+'area: scorer':
+  - '(^|\n)([^\n]*, )?Scoring(, [^\n]*)?(\r?\n|$)'
+'area: ingest':
+  - '(^|\n)([^\n]*, )?Ingest \(KNOCK import/export\)(, [^\n]*)?(\r?\n|$)'
+'area: db':
+  - '(^|\n)([^\n]*, )?Database(, [^\n]*)?(\r?\n|$)'
+'area: docs':
+  - '(^|\n)([^\n]*, )?Docs(, [^\n]*)?(\r?\n|$)'
