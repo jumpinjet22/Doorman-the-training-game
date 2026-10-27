@@ -505,3 +505,176 @@ async fn a_token_can_be_claimed_once_until_it_is_forgotten(pool: PgPool) {
         .unwrap();
     assert_eq!(count(&pool, "turnstile_tokens").await, 1);
 }
+
+// -- progress, streaks and results ------------------------------------------------
+
+async fn answer(
+    pool: &PgPool,
+    player: uuid::Uuid,
+    day: chrono::NaiveDate,
+    item: &dorman_db::StoredItem,
+) {
+    dorman_db::record_vote(pool, player, item.id, Some(day), &valid_answer(item), 3000)
+        .await
+        .unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_day_completes_once_every_item_is_answered_and_stays_complete(pool: PgPool) {
+    let today = day("2026-10-27");
+    let items = seed_day(&pool, today).await;
+    let player = dorman_db::create_player(&pool).await.unwrap();
+
+    for item in &items[..items.len() - 1] {
+        answer(&pool, player, today, item).await;
+        assert!(!dorman_db::record_progress(&pool, player, today)
+            .await
+            .unwrap());
+    }
+    assert_eq!(count(&pool, "player_days").await, 1);
+    assert!(dorman_db::completed_days(&pool, player)
+        .await
+        .unwrap()
+        .is_empty());
+
+    answer(&pool, player, today, items.last().unwrap()).await;
+    assert!(dorman_db::record_progress(&pool, player, today)
+        .await
+        .unwrap());
+    // Republishing the day with more items doesn't take the streak away.
+    let more: Vec<String> = example_batch()
+        .items
+        .iter()
+        .map(|i| i.knock_key().to_string())
+        .collect();
+    publish(&pool, today, &more).await;
+    assert!(dorman_db::record_progress(&pool, player, today)
+        .await
+        .unwrap());
+    assert_eq!(
+        dorman_db::completed_days(&pool, player).await.unwrap(),
+        vec![today]
+    );
+
+    // A day with no set records nothing.
+    let unpublished = day("2026-10-30");
+    assert!(!dorman_db::record_progress(&pool, player, unpublished)
+        .await
+        .unwrap());
+    assert_eq!(count(&pool, "player_days").await, 1);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn completed_days_come_oldest_first_and_only_the_players_own(pool: PgPool) {
+    let batch = load_example(&pool).await;
+    let key = batch.items[0].knock_key().to_string();
+    let player = dorman_db::create_player(&pool).await.unwrap();
+    let other = dorman_db::create_player(&pool).await.unwrap();
+    for text in ["2026-10-27", "2026-10-25", "2026-10-26"] {
+        let items = publish(&pool, day(text), std::slice::from_ref(&key)).await;
+        // Each day's set is the same single item: votes are per item, so
+        // the first vote completes every later day too.
+        answer(&pool, player, day(text), &items[0]).await;
+        dorman_db::record_progress(&pool, player, day(text))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        dorman_db::completed_days(&pool, player).await.unwrap(),
+        vec![day("2026-10-25"), day("2026-10-26"), day("2026-10-27")]
+    );
+    assert!(dorman_db::completed_days(&pool, other)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn results_are_out_once_the_scorer_has_run_after_the_day(pool: PgPool) {
+    let played = day("2026-10-27");
+    assert!(!dorman_db::results_out(&pool, played).await.unwrap());
+    let run = |ran: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO scoring_runs (day, started_at, finished_at, players, items,
+                     settled, disputed, brigaded, export_path, config)
+                 VALUES ($1, now(), now(), 0, 0, 0, 0, 0, '', '{}')",
+            )
+            .bind(day(ran))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    // A run during the day doesn't count: the day wasn't over.
+    run("2026-10-27").await;
+    assert!(!dorman_db::results_out(&pool, played).await.unwrap());
+    run("2026-10-28").await;
+    assert!(dorman_db::results_out(&pool, played).await.unwrap());
+    assert!(!dorman_db::results_out(&pool, day("2026-10-28"))
+        .await
+        .unwrap());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn verdicts_carry_the_weighted_split_heaviest_first(pool: PgPool) {
+    let items = seed_day(&pool, day("2026-10-27")).await;
+    let (a, b) = (&items[0], &items[1]);
+    sqlx::query(
+        "INSERT INTO consensus (item_id, label, share, total_weight, status, split)
+         VALUES ($1, 'x', 0.8, 5, 'settled', '{\"y\": 1.0, \"x\": 4.0, \"z\": 1.0}'),
+                ($2, NULL, 0, 0, 'open', '{}')",
+    )
+    .bind(a.id)
+    .bind(b.id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let ids: Vec<uuid::Uuid> = items.iter().map(|i| i.id).collect();
+    let verdicts = dorman_db::verdicts(&pool, &ids).await.unwrap();
+    assert_eq!(verdicts.len(), 2, "only items the scorer decided on");
+    assert_eq!(
+        verdicts[&a.id],
+        dorman_db::Verdict {
+            status: "settled".into(),
+            label: Some("x".into()),
+            split: vec![("x".into(), 4.0), ("y".into(), 1.0), ("z".into(), 1.0)],
+        }
+    );
+    assert_eq!(verdicts[&b.id].status, "open");
+    assert!(verdicts[&b.id].split.is_empty());
+}
+
+#[sqlx::test(migrations = false)]
+async fn days_already_played_are_backfilled(pool: PgPool) {
+    let mut before = sqlx::migrate!("./migrations");
+    before.migrations = Cow::Owned(
+        before
+            .migrations
+            .iter()
+            .filter(|m| m.version < 4)
+            .cloned()
+            .collect(),
+    );
+    before.run(&pool).await.unwrap();
+    let today = day("2026-10-27");
+    let items = seed_day(&pool, today).await;
+    let finished = dorman_db::create_player(&pool).await.unwrap();
+    let halfway = dorman_db::create_player(&pool).await.unwrap();
+    for item in &items {
+        answer(&pool, finished, today, item).await;
+    }
+    answer(&pool, halfway, today, &items[0]).await;
+
+    dorman_db::migrate(&pool).await.unwrap();
+    assert_eq!(
+        dorman_db::completed_days(&pool, finished).await.unwrap(),
+        vec![today]
+    );
+    assert!(dorman_db::completed_days(&pool, halfway)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(count(&pool, "player_days").await, 2);
+}

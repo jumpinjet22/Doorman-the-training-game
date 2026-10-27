@@ -30,7 +30,7 @@ audit log; KNOCK's export script refuses anything else.
 | `crates/core` | Batch format, daily-set picking, intent options, share card. Pure, no IO. |
 | `crates/db` | Postgres queries and `migrations/`. |
 | `crates/ingest` | `dorman-ingest`: `migrate`, `load <batch.json>`, `review`/`approve <batch>`, `daily [--day]`. |
-| `crates/api` | `dorman-api`: Axum server, renders pages itself (askama + vanilla JS). |
+| `crates/api` | `dorman-api`: Axum server, renders pages itself (askama + vanilla JS): today's game one card at a time, results and share card, `/yesterday`, `/about`. |
 | `scorer/` | `dorman-scorer`: Python nightly job. Gold trust, Dawid-Skene, behavior flags, consensus. |
 | `fixtures/batch.example.json` | A real batch from KNOCK's export script, used by tests. |
 
@@ -47,6 +47,7 @@ cargo run -p dorman-ingest -- daily --day "$(date -u +%F)"
 
 # Cloudflare's always-pass Turnstile test keys; never use them in production.
 DORMAN_COOKIE_SECRET=$(openssl rand -hex 32) DORMAN_SECURE_COOKIES=false \
+DORMAN_LAUNCH_DATE="$(date -u +%F)" \
 DORMAN_TURNSTILE_SITE_KEY=1x00000000000000000000AA \
 DORMAN_TURNSTILE_SECRET=1x0000000000000000000000000000000AA \
   cargo run -p dorman-api          # http://127.0.0.1:8080
@@ -62,6 +63,7 @@ batches feed daily sets.
 | Variable | Default | What |
 |---|---|---|
 | `DORMAN_COOKIE_SECRET` | required | 32+ bytes; signs the player cookie and salts network hashes |
+| `DORMAN_LAUNCH_DATE` | required | day 1 of the game (`YYYY-MM-DD`); day numbers on the page and share card count from it |
 | `DORMAN_TURNSTILE_SITE_KEY`, `DORMAN_TURNSTILE_SECRET` | required | Cloudflare Turnstile. If Cloudflare can't be reached, votes are refused |
 | `DORMAN_PUBLIC_ORIGIN` | `http://<bind>` | e.g. `https://example.com`; POSTs from any other `Origin` get 403 |
 | `DORMAN_CLIENT_IP_HEADER` | unset (TCP peer) | e.g. `Fly-Client-IP`; set only behind a proxy that overwrites it |
@@ -148,7 +150,6 @@ answers each, so use the soft-launch profile until real traffic exists.
 
 ## Not done yet (before going public)
 
-- The share card and streaks in the UI (the logic is in `crates/core/src/share.rs`).
 - Overtime mode, ranks, leaderboard.
 - Terms, privacy policy, 13+ age gate (see section 8 of the plan).
 - Switching sqlx to compile-time-checked `query!` macros once CI has Postgres.

@@ -2,6 +2,8 @@
 //! `query!` macros so the workspace builds without a live database; switch to
 //! the macros (and `cargo sqlx prepare`) once CI has a Postgres service.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use dorman_core::{intent_options, BatchItem, INTENT_OPTION_COUNT};
 use serde_json::Value;
@@ -347,4 +349,86 @@ pub async fn claim_token(
     .execute(pool)
     .await?;
     Ok(result.rows_affected() == 1)
+}
+
+// -- progress, streaks and results ---------------------------------------------
+
+/// Notes that the player played `day`, and whether they've now answered
+/// every item in its set. Returns whether the day is complete. A day once
+/// complete stays complete.
+pub async fn record_progress(
+    pool: &PgPool,
+    player_id: Uuid,
+    day: NaiveDate,
+) -> Result<bool, Error> {
+    sqlx::query_scalar(
+        "INSERT INTO player_days (player_id, day, completed)
+         SELECT $1, d.day,
+                (SELECT count(*) FROM votes v
+                 WHERE v.player_id = $1 AND v.item_id = ANY (d.item_ids)) >= cardinality(d.item_ids)
+         FROM daily_sets d WHERE d.day = $2
+         ON CONFLICT (player_id, day)
+         DO UPDATE SET completed = player_days.completed OR excluded.completed
+         RETURNING completed",
+    )
+    .bind(player_id)
+    .bind(day)
+    .fetch_optional(pool)
+    .await
+    .map(|completed| completed.unwrap_or(false))
+}
+
+/// Every day the player completed, oldest first.
+pub async fn completed_days(pool: &PgPool, player_id: Uuid) -> Result<Vec<NaiveDate>, Error> {
+    sqlx::query_scalar(
+        "SELECT day FROM player_days WHERE player_id = $1 AND completed ORDER BY day",
+    )
+    .bind(player_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Whether the scorer has run since `day` ended, so its results are final
+/// for the night. A run is logged under the day it ran.
+pub async fn results_out(pool: &PgPool, day: NaiveDate) -> Result<bool, Error> {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM scoring_runs WHERE day > $1)")
+        .bind(day)
+        .fetch_one(pool)
+        .await
+}
+
+/// What the scorer decided about one item.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Verdict {
+    /// `open`, `settled` or `disputed`.
+    pub status: String,
+    pub label: Option<String>,
+    /// Answer -> trust behind it, heaviest first.
+    pub split: Vec<(String, f64)>,
+}
+
+/// The scorer's verdicts for these items. Items it never decided on (gold
+/// items, or anything not yet scored) are left out.
+pub async fn verdicts(pool: &PgPool, item_ids: &[Uuid]) -> Result<HashMap<Uuid, Verdict>, Error> {
+    let rows =
+        sqlx::query("SELECT item_id, status, label, split FROM consensus WHERE item_id = ANY ($1)")
+            .bind(item_ids)
+            .fetch_all(pool)
+            .await?;
+    rows.iter()
+        .map(|row| {
+            let split: HashMap<String, f64> = serde_json::from_value(row.try_get("split")?)
+                .map_err(|e| Error::Decode(e.into()))?;
+            let mut split: Vec<(String, f64)> = split.into_iter().collect();
+            split.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            Ok((
+                row.try_get("item_id")?,
+                Verdict {
+                    status: row.try_get("status")?,
+                    label: row.try_get("label")?,
+                    split,
+                },
+            ))
+        })
+        .collect()
 }

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}About · Who's At The Door?{% endblock %}
+{% block main %}
+<h1>About this game</h1>
+<p>Every day you get a handful of lines someone said to a smart doorbell, and you guess why they're at the door, or pick the better of two replies the doorbell could give.</p>
+<h2>What your answers are for</h2>
+<p>None of these visitors are real. A computer program wrote every line to help train <strong>KNOCK</strong>, a doorbell assistant. Some of what it writes is off: the wrong reason for the visit, or a reply nobody would want to hear at their door. Your answers, together with everyone else's, decide which lines are good enough to learn from and which get thrown out.</p>
+<p>Some questions have an answer we already know. They help us tell careful players from random clicking, so careful answers count for more. We never say which ones they are.</p>
+<h2>What we keep about you</h2>
+<ul>
+  <li>A random ID in a cookie, so we know which answers are yours. No name, no email, no account.</li>
+  <li>Your answers, and how long each one took.</li>
+  <li>We never store your IP address. To stop floods of fake players, we keep a scrambled code for your network for a day.</li>
+  <li>Cloudflare checks each vote comes from a person.</li>
+</ul>
+<p><a href="/">Back to today's game</a></p>
+{% endblock %}

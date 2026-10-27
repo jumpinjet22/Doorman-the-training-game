@@ -39,6 +39,9 @@ struct Args {
     /// trusting a header no proxy overwrites lets anyone pick their address.
     #[arg(long, env = "DORMAN_CLIENT_IP_HEADER")]
     client_ip_header: Option<HeaderName>,
+    /// Day 1 of the game (YYYY-MM-DD). Day numbers count from here.
+    #[arg(long, env = "DORMAN_LAUNCH_DATE")]
+    launch_date: chrono::NaiveDate,
     #[arg(long, env = "DORMAN_VOTES_PER_MINUTE", default_value_t = Limits::default().votes_per_minute)]
     votes_per_minute: i32,
     /// New players allowed per hour from one /24 (IPv4) or /48 (IPv6).
@@ -113,6 +116,7 @@ async fn main() -> anyhow::Result<()> {
         public_origin: public_origin.trim_end_matches('/').to_string(),
         client_ip_header: args.client_ip_header,
         network_salt: network_salt(&args.cookie_secret),
+        launch_date: args.launch_date,
         limits: Limits {
             votes_per_minute: args.votes_per_minute,
             new_players_per_hour: args.new_players_per_hour,

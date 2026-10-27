@@ -1,0 +1,20 @@
+{% macro masthead(m) %}
+<p class="day">{% if let Some(n) = m.number %}Day {{ n }} · {% endif %}<time datetime="{{ m.day }}">{{ m.day }}</time></p>
+{% endmacro %}
+
+{% macro bars(list) %}
+<ul class="bars">
+  {% for bar in list.iter() %}
+  <li{% if bar.mine %} class="mine"{% endif %}>
+    <span class="label">{{ bar.label }}{% if bar.mine %} <span class="you">(you)</span>{% endif %}</span>
+    <span class="pct">{{ bar.percent }}%</span>
+    <meter min="0" max="100" value="{{ bar.percent }}" aria-hidden="true"></meter>
+  </li>
+  {% endfor %}
+</ul>
+{% endmacro %}
+
+{% macro scene(item) %}
+<p class="line">&ldquo;{{ item.text }}&rdquo;</p>
+{% if let Some(scene) = item.scene %}<p class="scene">📷 {{ scene }}</p>{% endif %}
+{% endmacro %}

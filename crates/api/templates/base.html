@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Who's At The Door?{% endblock %}</title>
+<link rel="stylesheet" href="/static/play.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="/">🚪 Who's At The Door?</a>
+  <nav aria-label="Pages">
+    <a href="/">Today</a>
+    <a href="/yesterday">Yesterday</a>
+    <a href="/about">About</a>
+  </nav>
+</header>
+<main>
+{% block main %}{% endblock %}
+</main>
+{% block scripts %}{% endblock %}
+<script src="/static/play.js" defer></script>
+</body>
+</html>

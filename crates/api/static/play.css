@@ -1,21 +1,45 @@
-/* The play page. Served as a file so the CSP can forbid inline styles. */
+/* Every page. Served as a file so the CSP can forbid inline styles. */
 :root { --bg: #f6f3ee; --fg: #1d1b18; --muted: #6b655c; --card: #fff; --accent: #c2410c; --line: #e4ded4; }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #171512; --fg: #f1ece4; --muted: #a39b8f; --card: #221f1b; --accent: #fb923c; --line: #37322b; }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
-main { max-width: 34rem; margin: 0 auto; padding: 1.5rem 1rem 4rem; }
+a { color: var(--accent); }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.top { max-width: 34rem; margin: 0 auto; padding: 1rem 1rem 0; display: flex; flex-wrap: wrap;
+       gap: .5rem 1rem; align-items: baseline; justify-content: space-between; }
+.brand { font-weight: 700; color: var(--fg); text-decoration: none; }
+.top nav { display: flex; gap: 1rem; }
+main { max-width: 34rem; margin: 0 auto; padding: 1rem 1rem 4rem; }
 h1 { font-size: 1.6rem; margin: 0; }
-.day { color: var(--muted); margin: 0 0 1.5rem; }
-.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
+h2 { font-size: 1.15rem; margin: 1.5rem 0 .5rem; }
+.day { color: var(--muted); margin: 0 0 1rem; }
+.progress { width: 100%; height: .5rem; accent-color: var(--accent); }
+.count { color: var(--muted); font-size: .85rem; margin: .2rem 0 1rem; }
+.card, .result { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem;
+                 margin-bottom: 1rem; }
+.results { list-style: none; padding: 0; }
 .prompt { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); margin: 0; }
-.line { font-size: 1.15rem; margin: .4rem 0; }
-.scene { color: var(--muted); font-size: .9rem; margin: 0 0 .6rem; }
+h2.prompt { margin: 0; }
+.line { font-size: 1.15rem; margin: .4rem 0; overflow-wrap: anywhere; }
+.scene { color: var(--muted); font-size: .9rem; margin: 0 0 .6rem; overflow-wrap: anywhere; }
+.choices { list-style: none; margin: 0; padding: 0; }
 button { display: block; width: 100%; text-align: left; font: inherit; color: inherit; background: transparent;
          border: 1px solid var(--line); border-radius: 8px; padding: .6rem .8rem; margin-top: .5rem; cursor: pointer; }
 button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { cursor: default; opacity: .75; }
-button.mine { border-color: var(--accent); opacity: 1; }
-.split { margin-top: .6rem; font-size: .85rem; color: var(--muted); }
-.bar { height: 6px; background: var(--accent); border-radius: 3px; margin: 2px 0 6px; }
+button.mine { border-color: var(--accent); border-width: 2px; opacity: 1; }
+.split { margin-top: .6rem; font-size: .9rem; }
+.bars { list-style: none; margin: .5rem 0 0; padding: 0; }
+.bars li { display: grid; grid-template-columns: 1fr auto; gap: 0 .5rem; margin-bottom: .4rem; }
+.bars li.mine .label { font-weight: 700; }
+.bars meter { grid-column: 1 / -1; width: 100%; height: .5rem; }
+.you { color: var(--muted); font-weight: 400; }
+.next { display: inline-block; margin-top: 1rem; font-weight: 700; }
+.share pre { font: 1.3rem/1.4 system-ui, sans-serif; white-space: pre-wrap; margin: .5rem 0; }
+.actions { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.actions button { width: auto; margin: 0; }
+.hint, .verdict { color: var(--muted); font-size: .9rem; }
+.verdict { color: var(--fg); }

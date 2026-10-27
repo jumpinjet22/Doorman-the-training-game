@@ -1,6 +1,7 @@
 //! Domain types and pure game logic. No IO lives here.
 
 pub mod batch;
+pub mod calendar;
 pub mod clock;
 pub mod daily;
 pub mod limits;
@@ -8,9 +9,10 @@ pub mod share;
 pub mod turnstile;
 
 pub use batch::{Batch, BatchError, BatchItem, BOTH_BAD};
+pub use calendar::{day_number, next_reset, streak};
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use daily::{intent_options, pick_daily_set, DailyPlan};
-pub use share::{share_card, Outcome};
+pub use share::{score_answer, share_card, Decision, Outcome};
 pub use turnstile::{TurnstileVerifier, Verdict};
 
 /// How many choices an intent item shows.
