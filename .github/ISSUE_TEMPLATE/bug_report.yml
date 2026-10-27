@@ -39,7 +39,7 @@ body:
         - Gameplay / play page
         - API / server
         - Scoring
-        - Ingest (KNOCK import/export)
+        - Ingest / generation
         - Database
         - Docs
         - Not sure

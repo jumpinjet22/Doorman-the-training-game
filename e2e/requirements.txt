@@ -1,4 +1,4 @@
-# End-to-end and contract tests. From the repo root:  pip install -r e2e/requirements.txt
+# End-to-end tests. From the repo root:  pip install -r e2e/requirements.txt
 # then:  playwright install chromium
 -e ./scorer[dev]
 pytest>=8

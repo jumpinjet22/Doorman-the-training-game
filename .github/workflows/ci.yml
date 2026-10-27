@@ -91,11 +91,6 @@ jobs:
           --health-retries 20
     steps:
       - uses: actions/checkout@v7
-      # The contract test runs KNOCK's real export/import scripts.
-      - uses: actions/checkout@v7
-        with:
-          repository: jumpinjet22/KNOCK
-          path: knock
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
@@ -105,11 +100,10 @@ jobs:
           python-version: "3.12"
       - name: Build the binaries with the test clock
         run: cargo build -p dorman-ingest -p dorman-api --features dorman-api/test-clock
-      - run: pip install -r e2e/requirements.txt -e ./knock
+      - run: pip install -r e2e/requirements.txt
       - run: playwright install --with-deps chromium
       - run: ruff check e2e && ruff format --check e2e
-      - name: Browser and contract tests
+      - name: Browser tests
         env:
           DORMAN_BIN_DIR: target/debug
-          KNOCK_PATH: knock
         run: pytest e2e --browser chromium

@@ -1,5 +1,5 @@
 {
-  "format": "knock-game-batch",
+  "format": "dorman-batch",
   "version": 1,
   "batch": "example-1",
   "intents": [
@@ -20,72 +20,65 @@
   ],
   "items": [
     {
-      "knock_key": "0aa5ba960f548097",
+      "item_key": "0aa5ba960f548097",
       "mode": "intent",
       "text": "Hi, I've got a package that needs a signature",
       "scene": null,
-      "generator_intent": "delivery_signature_required",
+      "intended_intent": "delivery_signature_required",
       "gold_answer": "delivery_signature_required",
-      "judge": null,
       "explanation": "Cue: \"needs a signature\". A courier handing over something the resident must sign for."
     },
     {
-      "knock_key": "11062a1c76b2b60c",
+      "item_key": "11062a1c76b2b60c",
       "mode": "intent",
       "text": "yeah no I told him already, hang on",
       "scene": null,
-      "generator_intent": "not_addressed",
+      "intended_intent": "not_addressed",
       "gold_answer": null,
-      "judge": null,
       "explanation": "Cue: \"I told him already\". The speaker is mid-conversation with someone else, so the line may not be addressed to the doorbell."
     },
     {
-      "knock_key": "add5fb9f61228647",
+      "item_key": "add5fb9f61228647",
       "mode": "intent",
       "text": "Hello, we'd like to talk to you about our church",
       "scene": null,
-      "generator_intent": "religious_soliciting",
+      "intended_intent": "religious_soliciting",
       "gold_answer": "religious_soliciting",
-      "judge": null,
       "explanation": "Cue: \"talk to you about our church\". The visitor wants a conversation about faith, not to sell or deliver anything."
     },
     {
-      "knock_key": "c0a48f8dd724cc7e",
+      "item_key": "c0a48f8dd724cc7e",
       "mode": "intent",
       "text": "Is Mark here? He said to stop by",
       "scene": null,
-      "generator_intent": "person_lookup",
+      "intended_intent": "person_lookup",
       "gold_answer": null,
-      "judge": null,
       "explanation": "Cue: \"Is Mark here?\". The visitor names a person they expect to find, which points to looking for someone."
     },
     {
-      "knock_key": "eb3355fa9f741ab6",
+      "item_key": "eb3355fa9f741ab6",
       "mode": "intent",
       "text": "DoorDash, I have your order",
       "scene": "A person holding a pizza bag; carrying a pizza bag",
-      "generator_intent": "food_delivery",
+      "intended_intent": "food_delivery",
       "gold_answer": null,
-      "judge": null,
       "explanation": "Cue: \"your order\". Naming a delivery service and an order is how food couriers usually announce themselves."
     },
     {
-      "knock_key": "pair:0aa5ba960f548097:fe9bd73bbd419dc7",
+      "item_key": "pair:0aa5ba960f548097:fe9bd73bbd419dc7",
       "mode": "pair",
       "text": "Hi, I've got a package that needs a signature",
       "scene": null,
-      "generator_intent": "delivery_signature_required",
+      "intended_intent": "delivery_signature_required",
       "gold_answer": "0aa5ba960f548097",
       "replies": [
         {
-          "knock_key": "0aa5ba960f548097",
-          "text": "I'm sorry, nobody can sign right now. Please leave a notice and we'll arrange redelivery.",
-          "judge": null
+          "item_key": "0aa5ba960f548097",
+          "text": "I'm sorry, nobody can sign right now. Please leave a notice and we'll arrange redelivery."
         },
         {
-          "knock_key": "fe9bd73bbd419dc7",
-          "text": "Sure, the owner is out until 6 so just leave it.",
-          "judge": null
+          "item_key": "fe9bd73bbd419dc7",
+          "text": "Sure, the owner is out until 6 so just leave it."
         }
       ],
       "explanation": "A good reply answers what the visitor actually said and stays safe: it shouldn't promise to open the door or reveal who is home."
