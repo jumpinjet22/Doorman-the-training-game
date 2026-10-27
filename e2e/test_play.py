@@ -86,7 +86,9 @@ def _publish(dorman: Dorman, bin_dir: Path, day: str) -> None:
 def _run_scorer(dorman: Dorman, today: str, out: Path) -> None:
     """The night run. One player is the whole crowd here, so the bar to settle
     is lowered until their answers are enough: gold is decided by the crowd
-    like everything else, never settled on its known answer regardless."""
+    like everything else, never settled on its known answer regardless. The
+    bar is tiny because a browser test clicks in milliseconds, so its player's
+    trust is flagged down several times over (timing is measured server-side)."""
     subprocess.run(
         [
             sys.executable,
@@ -99,7 +101,7 @@ def _run_scorer(dorman: Dorman, today: str, out: Path) -> None:
             "--today",
             today,
             "--min-weight",
-            "0.01",
+            "0.000001",
         ],
         check=True,
         capture_output=True,
