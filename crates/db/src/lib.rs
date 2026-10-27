@@ -646,6 +646,45 @@ pub async fn weekly_standings(
         .collect()
 }
 
+/// The cached leaderboard page for the week starting `week_of`, if it was
+/// rendered at or after `fresh_after`.
+pub async fn cached_leaderboard(
+    pool: &PgPool,
+    week_of: NaiveDate,
+    fresh_after: DateTime<Utc>,
+) -> Result<Option<String>, Error> {
+    sqlx::query_scalar(
+        "SELECT body FROM leaderboard_cache WHERE week_of = $1 AND computed_at >= $2",
+    )
+    .bind(week_of)
+    .bind(fresh_after)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Stores a freshly rendered leaderboard page, and drops other weeks' pages.
+pub async fn cache_leaderboard(
+    pool: &PgPool,
+    week_of: NaiveDate,
+    computed_at: DateTime<Utc>,
+    body: &str,
+) -> Result<(), Error> {
+    sqlx::query("DELETE FROM leaderboard_cache WHERE week_of <> $1")
+        .bind(week_of)
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO leaderboard_cache (week_of, computed_at, body) VALUES ($1, $2, $3)
+         ON CONFLICT (week_of) DO UPDATE SET computed_at = excluded.computed_at, body = excluded.body",
+    )
+    .bind(week_of)
+    .bind(computed_at)
+    .bind(body)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// (handle, days played, settled answers, matching answers) for every player
 /// with a handle: what the board needs to put each one in a rank tier.
 pub async fn handle_records(pool: &PgPool) -> Result<Vec<(String, i64, i64, i64)>, Error> {
@@ -672,6 +711,17 @@ pub async fn handle_records(pool: &PgPool) -> Result<Vec<(String, i64, i64, i64)
             ))
         })
         .collect()
+}
+
+/// Takes a handle away from whoever has it, in any case, for a reported or
+/// offensive name. Returns false if nobody had it. The player keeps
+/// playing; they just drop off the leaderboard until they pick another.
+pub async fn clear_handle(pool: &PgPool, handle: &str) -> Result<bool, Error> {
+    let result = sqlx::query("UPDATE players SET handle = NULL WHERE lower(handle) = lower($1)")
+        .bind(handle)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 pub async fn handle(pool: &PgPool, player_id: Uuid) -> Result<Option<String>, Error> {

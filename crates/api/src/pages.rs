@@ -6,14 +6,14 @@ use std::collections::HashMap;
 
 use askama::Template;
 use axum::extract::{Form, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum_extra::extract::cookie::SignedCookieJar;
 use chrono::{Datelike, Days, NaiveDate};
 use dorman_core::ranks::MIN_WEEKLY_SCORED;
 use dorman_core::{
-    day_number, leaderboard, next_rank, next_reset, rank, score_answer, share_card, streak, tally,
-    Confidence, Decision, Outcome, Rank, Record, Standing,
+    check_handle, day_number, leaderboard, next_rank, next_reset, rank, score_answer, share_card,
+    streak, tally, Confidence, Decision, HandleProblem, Outcome, Rank, Record, Standing,
 };
 use dorman_db::{StoredItem, Verdict};
 use serde::Deserialize;
@@ -507,11 +507,37 @@ pub async fn finished_today(
     Ok(answers.len() == items.len())
 }
 
+/// How long a rendered leaderboard is served before it's recomputed.
+pub const LEADERBOARD_CACHE_SECS: i64 = 60;
+/// The most players shown in one rank tier.
+pub const LEADERBOARD_TIER_ROWS: usize = 100;
+
 /// `GET /leaderboard`: this week (Monday to today, UTC) by accuracy against
-/// settled answers, players with a handle only.
+/// settled answers, players with a handle only. The page is the same for
+/// everyone, so it's rendered at most once a minute (shared through the
+/// database) and may be cached publicly for as long.
 pub async fn leaderboard_page(State(state): State<AppState>) -> Result<Response, AppError> {
+    let now = state.clock.now();
     let today = state.clock.today();
     let monday = today - Days::new(u64::from(today.weekday().num_days_from_monday()));
+    let window = chrono::Duration::seconds(LEADERBOARD_CACHE_SECS);
+    let body = match dorman_db::cached_leaderboard(&state.pool, monday, now - window).await? {
+        Some(body) => body,
+        None => {
+            let body = render_leaderboard(&state, monday, today).await?;
+            dorman_db::cache_leaderboard(&state.pool, monday, now, &body).await?;
+            body
+        }
+    };
+    let cache = format!("public, max-age={LEADERBOARD_CACHE_SECS}");
+    Ok(([(header::CACHE_CONTROL, cache)], Html(body)).into_response())
+}
+
+async fn render_leaderboard(
+    state: &AppState,
+    monday: NaiveDate,
+    today: NaiveDate,
+) -> Result<String, AppError> {
     let count = |n: i64| u32::try_from(n).unwrap_or(u32::MAX);
     let standings = dorman_db::weekly_standings(&state.pool, monday, today)
         .await?
@@ -541,6 +567,7 @@ pub async fn leaderboard_page(State(state): State<AppState>) -> Result<Response,
         let rows: Vec<BoardRow> = board
             .iter()
             .filter(|s| ranks.get(&s.handle).copied().unwrap_or(Rank::Rookie) == tier)
+            .take(LEADERBOARD_TIER_ROWS)
             .enumerate()
             .map(|(n, s)| BoardRow {
                 place: n + 1,
@@ -560,17 +587,7 @@ pub async fn leaderboard_page(State(state): State<AppState>) -> Result<Response,
         minimum: MIN_WEEKLY_SCORED,
         tiers,
     };
-    Ok(Html(page.render()?).into_response())
-}
-
-/// A handle shown on the leaderboard: 3 to 20 letters, digits, `_` or `-`,
-/// starting with a letter or digit.
-pub fn valid_handle(handle: &str) -> bool {
-    (3..=20).contains(&handle.len())
-        && handle.starts_with(|c: char| c.is_ascii_alphanumeric())
-        && handle
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    Ok(page.render()?)
 }
 
 #[derive(Deserialize)]
@@ -594,11 +611,26 @@ pub async fn set_handle(
         );
     };
     let handle = form.handle.trim();
-    if !valid_handle(handle) {
-        return refuse(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "A name is 3 to 20 letters, digits, dashes or underscores.",
-        );
+    match check_handle(handle) {
+        None => {}
+        Some(HandleProblem::Shape) => {
+            return refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "A name is 3 to 20 letters, digits, dashes or underscores.",
+            )
+        }
+        Some(HandleProblem::Reserved) => {
+            return refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "That name is reserved for the game. Pick another.",
+            )
+        }
+        Some(HandleProblem::Blocked) => {
+            return refuse(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "That name isn't allowed. Pick another.",
+            )
+        }
     }
     if !dorman_db::set_handle(&state.pool, player, handle).await? {
         return refuse(

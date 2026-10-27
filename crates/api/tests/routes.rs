@@ -9,6 +9,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{header, HeaderName, Request, Response, StatusCode};
 use axum::Router;
 use chrono::Duration;
+use dorman_api::pages::LEADERBOARD_CACHE_SECS;
 use dorman_api::turnstile::CloudflareVerifier;
 use dorman_api::{app, cookie_key, network_salt, AppState, Limits, MAX_BODY_BYTES};
 use dorman_core::{BatchItem, Clock, FixedClock, TurnstileVerifier};
@@ -1832,6 +1833,9 @@ async fn the_leaderboard_ranks_this_weeks_named_players(pool: PgPool) {
             .unwrap();
         }
     }
+    // The empty board above is cached for a minute; wait it out.
+    h.clock
+        .advance(Duration::seconds(LEADERBOARD_CACHE_SECS + 1));
     let (_, _, page) = h.get("/leaderboard", None).await;
     let rows: Vec<&str> = page.split("<tr><td>").skip(1).collect();
     let names: Vec<&str> = rows
@@ -1850,6 +1854,76 @@ async fn the_leaderboard_ranks_this_weeks_named_players(pool: PgPool) {
     h.clock.advance(Duration::days(7));
     let (_, _, page) = h.get("/leaderboard", None).await;
     assert!(page.contains("Nobody's qualified yet this week."));
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn the_leaderboard_is_computed_at_most_once_a_minute(pool: PgPool) {
+    let h = Harness::new(pool);
+    let response = h
+        .app
+        .clone()
+        .oneshot(Request::get("/leaderboard").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        format!("public, max-age={LEADERBOARD_CACHE_SECS}"),
+        "the board is the same for everyone, so a CDN may hold it too"
+    );
+    let first = String::from_utf8(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+
+    // Swap the cached page for a marker: if the next request inside the
+    // window recomputed the aggregate, the marker would be gone.
+    sqlx::query("UPDATE leaderboard_cache SET body = 'cached-marker'")
+        .execute(&h.pool)
+        .await
+        .unwrap();
+    h.clock
+        .advance(Duration::seconds(LEADERBOARD_CACHE_SECS - 1));
+    assert_eq!(h.get("/leaderboard", None).await.2, "cached-marker");
+
+    h.clock.advance(Duration::seconds(2));
+    assert_eq!(h.get("/leaderboard", None).await.2, first);
+    assert_eq!(count(&h.pool, "leaderboard_cache").await, 1);
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn reserved_and_blocked_handles_are_refused(pool: PgPool) {
+    let h = Harness::new(pool);
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let cookie = h.play_all(&items).await;
+
+    for (name, why) in [
+        ("KN0CK", "reserved for the game"),
+        ("Head-of-Security", "reserved for the game"),
+        ("adm1n", "reserved for the game"),
+        ("n4zi_fan", "isn&#39;t allowed"),
+    ] {
+        let response = handle_post(&h, Some(&cookie), name).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{name}"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains(why), "{name}: {body}");
+    }
+    let (_, _, page) = h.get("/results", Some(&cookie)).await;
+    assert!(!page.contains("You're <strong>"), "no name was taken");
+
+    // Innocent names that merely contain a blocked or reserved fragment pass.
+    let response = handle_post(&h, Some(&cookie), "suspicious_porch_cat").await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
 }
 
 // -- explanations and confidence ----------------------------------------------

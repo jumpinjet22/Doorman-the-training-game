@@ -1033,3 +1033,138 @@ async fn handles_are_unique_whatever_their_case(pool: PgPool) {
         None
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_maintainer_can_clear_a_handle_in_any_case(pool: PgPool) {
+    let player = dorman_db::create_player(&pool).await.unwrap();
+    assert!(dorman_db::set_handle(&pool, player, "Rude_Name")
+        .await
+        .unwrap());
+
+    assert!(dorman_db::clear_handle(&pool, "rude_name").await.unwrap());
+    assert_eq!(dorman_db::handle(&pool, player).await.unwrap(), None);
+    assert!(
+        dorman_db::player_exists(&pool, player).await.unwrap(),
+        "they keep playing"
+    );
+    assert!(
+        !dorman_db::clear_handle(&pool, "rude_name").await.unwrap(),
+        "nobody has it now"
+    );
+    // Freed for someone else.
+    let other = dorman_db::create_player(&pool).await.unwrap();
+    assert!(dorman_db::set_handle(&pool, other, "Rude_Name")
+        .await
+        .unwrap());
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_leaderboard_cache_serves_only_fresh_pages_for_this_week(pool: PgPool) {
+    let at = |text: &str| text.parse::<chrono::DateTime<chrono::Utc>>().unwrap();
+    let (week, next_week) = (day("2026-10-26"), day("2026-11-02"));
+    let rendered = at("2026-10-27T12:00:00Z");
+    dorman_db::cache_leaderboard(&pool, week, rendered, "board")
+        .await
+        .unwrap();
+
+    let fresh_after = |t| dorman_db::cached_leaderboard(&pool, week, at(t));
+    assert_eq!(
+        fresh_after("2026-10-27T11:59:00Z").await.unwrap(),
+        Some("board".into())
+    );
+    assert_eq!(
+        fresh_after("2026-10-27T12:00:01Z").await.unwrap(),
+        None,
+        "stale"
+    );
+    assert_eq!(
+        dorman_db::cached_leaderboard(&pool, next_week, at("2026-10-27T11:00:00Z"))
+            .await
+            .unwrap(),
+        None,
+        "another week's page is never served"
+    );
+
+    // Caching a new week drops the old one.
+    dorman_db::cache_leaderboard(&pool, next_week, rendered, "next")
+        .await
+        .unwrap();
+    assert_eq!(count(&pool, "leaderboard_cache").await, 1);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn confidence_is_stored_only_when_given(pool: PgPool) {
+    let today = day("2026-10-27");
+    let items = seed_day(&pool, today).await;
+    let player = dorman_db::create_player(&pool).await.unwrap();
+    let (a, b) = (&items[0], &items[1]);
+    for (item, confidence) in [(a, Some("certain")), (b, None)] {
+        let answer = valid_answer(item);
+        assert!(dorman_db::record_vote_with_confidence(
+            &pool,
+            player,
+            item.id,
+            Some(today),
+            &answer,
+            2000,
+            confidence
+        )
+        .await
+        .unwrap());
+    }
+    assert!(
+        !dorman_db::record_vote_with_confidence(
+            &pool,
+            player,
+            a.id,
+            Some(today),
+            "again",
+            2000,
+            Some("unsure")
+        )
+        .await
+        .unwrap(),
+        "one vote per item, confidence included"
+    );
+    assert_eq!(
+        dorman_db::player_confidences(&pool, player, &[a.id, b.id])
+            .await
+            .unwrap(),
+        vec![(a.id, "certain".to_string())]
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn handle_records_count_days_and_settled_answers_for_named_players(pool: PgPool) {
+    let today = day("2026-10-27");
+    let items = seed_day(&pool, today).await;
+    let item = &items[0];
+    let right = valid_answer(item);
+    sqlx::query(
+        "INSERT INTO consensus (item_id, label, share, total_weight, status) VALUES ($1, $2, 1, 9, 'settled')",
+    )
+    .bind(item.id)
+    .bind(&right)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let ada = dorman_testkit::player_with_votes(&pool, today, &[(item.id, right.as_str())]).await;
+    dorman_db::set_handle(&pool, ada, "Ada").await.unwrap();
+    dorman_db::record_progress(&pool, ada, today).await.unwrap();
+    let bob = dorman_testkit::player_with_votes(&pool, today, &[(item.id, "wrong")]).await;
+    dorman_db::set_handle(&pool, bob, "Bob").await.unwrap();
+    // No handle, so not on the board at all.
+    dorman_testkit::player_with_votes(&pool, today, &[(item.id, right.as_str())]).await;
+
+    let mut records = dorman_db::handle_records(&pool).await.unwrap();
+    records.sort();
+    let all_answered = i64::from(items.len() == 1);
+    assert_eq!(
+        records,
+        vec![
+            ("Ada".to_string(), all_answered, 1, 1),
+            ("Bob".to_string(), 0, 1, 0)
+        ]
+    );
+}
