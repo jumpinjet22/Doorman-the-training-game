@@ -1,42 +1,76 @@
 """Cohort detection: accounts that signed up close together and then keep
-voting identically, item after item.
+giving the same answers against everyone else, item after item.
 
 The brigade check (`brigade`) only sees accounts that are new when they vote,
 and only when eight or more of them pile onto one answer on one item. A farm
 that signs up early and waits, or spreads itself so no item gets eight of
 its votes, gets past it. Its accounts still give themselves away together:
-they joined within days of each other and they answer as one. Honest
-players who joined the same week agree often, but not on nearly everything,
-and where they do agree it's with everyone else.
+they joined within days of each other, and they push the same wrong answers.
 
-So accounts are linked when they joined within `cohort_window_hours` of each
-other and gave the same answer on at least `cohort_agreement` of at least
-`cohort_min_shared` shared non-gold items; a connected group of at least
-`cohort_min_size` is a cohort. On each item where a cohort's answer isn't
-the clear choice of everyone outside it, the cohort's votes count for
+Agreeing on the right answer is no evidence of anything (good players who
+joined on launch day agree on nearly every item), so only answers that go
+against the crowd link two accounts: an answer both gave on an item where,
+among everyone else who answered it, that answer isn't the most common.
+Accounts are linked when they joined within `cohort_window_hours` of each
+other, share at least `cohort_min_shared` such answers, and agree on at least
+`cohort_agreement` of all the items they both answered. A connected group of
+at least `cohort_min_size` is a cohort. On each item where a cohort's answer
+isn't the clear choice of everyone outside it, the cohort's votes count for
 nothing, exactly as a brigade's do. Gold is left out: answering it right is
 what the farm wants to look like.
+
+Only accounts with enough against-the-crowd answers are ever paired, through
+an index of those answers, so the cost grows with how much contrarian voting
+there is, not with how many people joined on the same day. The counts are
+raw, not trust-weighted: a farm big enough to be the plurality on its items
+looks like the crowd here, and is left to Dawid-Skene and the brigade check.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
 from datetime import datetime
+from itertools import combinations
 
 from dorman_scorer.brigade import is_new
 from dorman_scorer.config import Config
 from dorman_scorer.model import Item, Vote
 
 
+def _against(counts: Counter[str], answer: str) -> bool:
+    """Whether `answer`, given by two of the voters counted in `counts`, isn't
+    a most-common answer among the rest. With nobody else, it isn't against
+    anyone."""
+    rest = counts[answer] - 2
+    others = [n for a, n in counts.items() if a != answer]
+    top = max([rest, *others])
+    return top > 0 and rest < top
+
+
 def cohorts(items: dict[str, Item], votes: list[Vote], config: Config) -> list[set[str]]:
-    """Groups of accounts that joined together and vote as one."""
+    """Groups of accounts that joined together and vote as one against the
+    crowd."""
     joined: dict[str, datetime] = {}
     answers: dict[str, dict[str, str]] = defaultdict(dict)
+    counts: dict[str, Counter[str]] = defaultdict(Counter)
     for vote in votes:
         if vote.joined is not None:
             joined[vote.player_id] = vote.joined
         if items[vote.item_id].gold_answer is None:
             answers[vote.player_id][vote.item_id] = vote.answer
+            counts[vote.item_id][vote.answer] += 1
+
+    # (item, answer) -> players who gave it, for answers that would go against
+    # the crowd if another account gave them too.
+    contrarian: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for player in joined:
+        for item_id, answer in answers.get(player, {}).items():
+            if counts[item_id][answer] >= 2 and _against(counts[item_id], answer):
+                contrarian[(item_id, answer)].append(player)
+    together: Counter[tuple[str, str]] = Counter()
+    for players in contrarian.values():
+        for a, b in combinations(sorted(players), 2):
+            together[(a, b)] += 1
 
     parent = {player: player for player in joined}
 
@@ -46,19 +80,14 @@ def cohorts(items: dict[str, Item], votes: list[Vote], config: Config) -> list[s
             player = parent[player]
         return player
 
-    order = sorted(joined, key=lambda p: (joined[p], p))
-    for i, a in enumerate(order):
-        mine = answers.get(a, {})
-        for b in order[i + 1 :]:
-            if joined[b] - joined[a] > config.cohort_window:
-                break
-            theirs = answers.get(b, {})
-            shared = mine.keys() & theirs.keys()
-            if len(shared) < config.cohort_min_shared:
-                continue
-            same = sum(1 for item in shared if mine[item] == theirs[item])
-            if same >= config.cohort_agreement * len(shared):
-                parent[root(a)] = root(b)
+    for (a, b), n in together.items():
+        if n < config.cohort_min_shared or abs(joined[a] - joined[b]) > config.cohort_window:
+            continue
+        mine, theirs = answers[a], answers[b]
+        shared = mine.keys() & theirs.keys()
+        same = sum(1 for item in shared if mine[item] == theirs[item])
+        if same >= config.cohort_agreement * len(shared):
+            parent[root(a)] = root(b)
 
     groups: dict[str, set[str]] = defaultdict(set)
     for player in joined:

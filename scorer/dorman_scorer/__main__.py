@@ -37,8 +37,8 @@ _HELP = {
     "new_account_hours": "accounts younger than this when voting count as new",
     "brigade_min_votes": "new-account votes for one answer on one item that make a brigade",
     "cohort_window_hours": "accounts created this close together can form a cohort",
-    "cohort_min_shared": "items two accounts must both answer before they can be linked",
-    "cohort_agreement": "share of those answers that must match to link two accounts",
+    "cohort_min_shared": "same against-the-crowd answers that can link two accounts",
+    "cohort_agreement": "share of all their shared items two linked accounts must agree on",
     "cohort_min_size": "linked accounts that make a cohort",
 }
 

@@ -29,10 +29,11 @@ class Config:
     # Cohort detection, whatever the accounts' age: accounts that signed up
     # within this many hours of each other...
     cohort_window_hours: float = 72.0
-    # ...and answered at least this many of the same items...
+    # ...and gave the same answer against everyone else's most common one on
+    # at least this many items...
     cohort_min_shared: int = 5
-    # ...identically at least this often are linked; this many linked
-    # accounts make a cohort.
+    # ...and agree on at least this share of all the items they both answered
+    # are linked; this many linked accounts make a cohort.
     cohort_agreement: float = 0.9
     cohort_min_size: int = 8
 

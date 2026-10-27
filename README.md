@@ -167,10 +167,12 @@ fail CI the moment they start passing, so the marker gets removed with the fix.
   favor that answer, every new-account vote on that item counts for zero in
   that night's run. With no established votes on the item yet, the burst is
   held back until regulars weigh in.
-- **Cohorts:** accounts created within 72 hours of each other that answer at
-  least 90% of 5+ shared non-gold items identically are linked; 8+ linked
-  accounts are a cohort, whatever their age, and on any item where a cohort's
-  answer isn't the clear choice of everyone else, its votes count for zero.
+- **Cohorts:** accounts created within 72 hours of each other that give the
+  same answer *against* everyone else's most common one on 5+ non-gold items
+  (and agree on 90%+ of everything they both answered) are linked; agreeing on
+  the right answer never links anyone. 8+ linked accounts are a cohort,
+  whatever their age, and on any item where a cohort's answer isn't the clear
+  choice of everyone else, its votes count for zero.
   That catches farms that age their accounts first or keep under 8 per item.
 - **Answer timing** is measured by the server: each card is rendered with a
   signed token naming the item, the player and when it was served, and the

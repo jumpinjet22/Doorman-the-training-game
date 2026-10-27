@@ -8,6 +8,7 @@ from datetime import timedelta
 
 import pytest
 
+from dorman_scorer.cohort import cohorts
 from dorman_scorer.config import SOFT_LAUNCH, Config
 from dorman_scorer.model import Vote
 from dorman_scorer.scoring import score
@@ -210,3 +211,23 @@ def test_honest_players_who_joined_together_are_not_a_cohort() -> None:
     world, _, verdicts, settled, accuracy = _run(Crowd(honest=60, newcomers=30, days=10))
     assert all(v.zeroed_votes == 0 for v in verdicts)
     assert len(settled) == len(verdicts) and accuracy == 1.0
+
+
+@pytest.mark.parametrize("accuracy", [0.95, 0.98, 1.0])
+def test_a_skilled_crowd_that_joined_together_is_not_a_cohort(accuracy: float) -> None:
+    """Launch day: everyone joined within hours, and good players agree on
+    nearly everything. Agreeing on the right answer isn't a farm's signature;
+    only agreeing against everyone else is."""
+    world = simulate(Crowd(honest=40, honest_accuracy=accuracy, days=7))
+    assert cohorts({i.id: i for i in world.items}, world.votes, Config()) == []
+    _, verdicts = score(world.items, world.votes, world.today)
+    assert all(v.zeroed_votes == 0 for v in verdicts)
+    assert all(v.status == "settled" for v in verdicts)
+    assert all(v.label == world.truth[v.item_id] for v in verdicts)
+
+
+def test_the_sleeper_farm_is_found_as_one_cohort() -> None:
+    world = simulate(Crowd(honest=12, sleepers=20))
+    found = cohorts({i.id: i for i in world.items}, world.votes, Config())
+    farm = {p for p, kind in world.player_kind.items() if kind == "sleeper"}
+    assert found == [farm]
