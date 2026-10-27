@@ -94,7 +94,8 @@ pub async fn player_with_votes(pool: &PgPool, day: NaiveDate, answers: &[(Uuid, 
 
 pub async fn count(pool: &PgPool, table: &str) -> i64 {
     let sql = format!("SELECT count(*) FROM {table}");
-    sqlx::query_scalar(&sql)
+    // Test-only: `table` is always a literal table name written in a test.
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .fetch_one(pool)
         .await
         .expect("count rows")

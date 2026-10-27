@@ -2,7 +2,7 @@
 {% import "macros.html" as m %}
 {% block main %}
 <h1>Today's game</h1>
-{% call m::masthead(masthead) %}
+{% call m::masthead(masthead) %}{% endcall %}
 <p>No game today. Come back tomorrow.</p>
 <p>The next game starts in <time id="countdown" datetime="{{ reset_at }}">{{ reset_in }}</time>.</p>
 <p><a href="/yesterday">See how yesterday's game turned out</a></p>
