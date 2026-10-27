@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/db", "crates/ingest", "crates/api"]
+members = ["crates/core", "crates/db", "crates/ingest", "crates/api", "crates/testkit"]
 
 [workspace.package]
 edition = "2021"
@@ -10,6 +10,7 @@ publish = false
 [workspace.dependencies]
 dorman-core = { path = "crates/core" }
 dorman-db = { path = "crates/db" }
+dorman-testkit = { path = "crates/testkit" }
 anyhow = "1"
 axum = "0.8"
 axum-extra = { version = "0.10", features = ["cookie-signed"] }
@@ -25,3 +26,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+http-body-util = "0.1"
+proptest = "1"
+tower = { version = "0.5", features = ["util"] }

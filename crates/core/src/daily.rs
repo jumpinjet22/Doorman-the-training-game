@@ -144,3 +144,69 @@ mod tests {
         assert_eq!(options, intent_options("k1", "i3", Some("i7"), &intents, 4));
     }
 }
+
+#[cfg(test)]
+mod properties {
+    use std::collections::HashSet;
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn pool(prefix: &'static str, max: usize) -> impl Strategy<Value = Vec<String>> {
+        proptest::collection::hash_set(0..500u32, 0..max)
+            .prop_map(move |set| set.into_iter().map(|n| format!("{prefix}{n}")).collect())
+    }
+
+    proptest! {
+        #[test]
+        fn a_set_is_distinct_drawn_from_the_pools_and_as_full_as_possible(
+            seed in "[0-9-]{10}",
+            new in pool("n", 30),
+            gold in pool("g", 10),
+            carry in pool("c", 5),
+            plan_new in 0usize..10, plan_gold in 0usize..5, plan_carry in 0usize..3,
+        ) {
+            let plan = DailyPlan { new: plan_new, gold: plan_gold, carry_over: plan_carry };
+            let set = pick_daily_set(&seed, plan, &new, &gold, &carry);
+
+            let unique: HashSet<&String> = set.iter().collect();
+            prop_assert_eq!(unique.len(), set.len());
+            prop_assert!(set.iter().all(|k| new.contains(k) || gold.contains(k) || carry.contains(k)));
+
+            let gold_count = set.iter().filter(|k| gold.contains(k)).count();
+            let carry_count = set.iter().filter(|k| carry.contains(k)).count();
+            prop_assert_eq!(carry_count, plan_carry.min(carry.len()));
+            prop_assert_eq!(gold_count, plan_gold.min(gold.len()));
+            let room = plan.total() - gold_count - carry_count;
+            prop_assert_eq!(set.len(), gold_count + carry_count + room.min(new.len()));
+
+            prop_assert_eq!(&set, &pick_daily_set(&seed, plan, &new, &gold, &carry));
+        }
+
+        #[test]
+        fn shuffling_is_a_permutation(seed in ".{0,12}", values in proptest::collection::vec(".{0,6}", 0..20)) {
+            let mut shuffled = seeded_shuffle(&seed, values.clone());
+            let mut original = values;
+            shuffled.sort();
+            original.sort();
+            prop_assert_eq!(shuffled, original);
+        }
+
+        #[test]
+        fn intent_options_are_distinct_known_and_include_the_answers(
+            key in "[a-f0-9]{16}", generator in 0usize..14, gold in proptest::option::of(0usize..14),
+        ) {
+            let intents: Vec<String> = (0..14).map(|i| format!("i{i}")).collect();
+            let gold = gold.map(|g| intents[g].clone());
+            let options = intent_options(&key, &intents[generator], gold.as_deref(), &intents, 4);
+            prop_assert_eq!(options.len(), 4);
+            prop_assert_eq!(options.iter().collect::<HashSet<_>>().len(), 4);
+            prop_assert!(options.iter().all(|o| intents.contains(o)));
+            prop_assert!(options.contains(&intents[generator]));
+            if let Some(gold) = gold {
+                prop_assert!(options.contains(&gold));
+            }
+        }
+    }
+}

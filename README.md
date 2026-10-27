@@ -58,10 +58,38 @@ python scripts/import_game_consensus.py exports/consensus-<date>.json \
 
 ## Tests
 
+Most suites need Postgres. Point `DATABASE_URL` at a role that can create
+databases; every test gets its own throwaway database.
+
 ```bash
-cargo test
-cd scorer && pytest
+export DATABASE_URL=postgres://dorman@127.0.0.1:5432/dorman
+
+cargo test --all-features                     # unit, property, Postgres and HTTP tests
+cd scorer && pytest                           # unit, property, simulation, Postgres
+cd .. && pip install -r e2e/requirements.txt && playwright install chromium
+KNOCK_PATH=../KNOCK pytest e2e                # real browser + KNOCK contract
 ```
+
+| Suite | Where |
+|---|---|
+| Rust unit + property (`proptest`) | `crates/core/src/*.rs` |
+| Postgres queries (`#[sqlx::test]`) | `crates/db/tests/` |
+| HTTP routes and security, frozen clock | `crates/api/tests/routes.rs` |
+| Shared Rust helpers | `crates/testkit` |
+| Scorer unit + `hypothesis` | `scorer/tests/test_scoring.py`, `test_properties.py` |
+| Simulated crowds (`-m sim`) | `scorer/tests/sim.py`, `test_simulation.py` |
+| Scorer against Postgres (`-m db`) | `scorer/tests/test_db.py` |
+| Browser, accessibility (axe), leaks | `e2e/test_play.py` |
+| KNOCK export -> Dorman -> KNOCK import | `e2e/test_contract.py` (needs `KNOCK_PATH`) |
+
+The E2E server is built with the `test-clock` feature, which lets tests set
+the time through a file. Production builds never include it.
+
+CI fails under these line-coverage gates: `dorman-core` 85%, `dorman-db` 85%,
+`dorman-api` 75%, `dorman_scorer` 90%.
+
+Tests marked `xfail(strict=True)` are known gaps that are planned work. They
+fail CI the moment they start passing, so the marker gets removed with the fix.
 
 ## Trust and consensus, in short
 

@@ -64,7 +64,7 @@ and `db`, 75% for `api`; `pytest-cov` at 90% for `dorman_scorer`.
 
 Sizes are rough: S is a sitting, M is a few, L is a week of evenings.
 
-### M0. Test foundation (M) — do this first
+### M0. Test foundation (M) — ✅ done
 
 Everything later depends on being able to test against a real database and a
 real browser cheaply.
@@ -154,7 +154,9 @@ What a player sees on a normal day.
 
 ### M3. The scorer, finished (M)
 
-- **Brigade detection:** flag items that get a burst of votes from accounts
+- **Brigade detection** (M0 confirmed the gap: a 40-account brigade settles
+  wrong answers today, see `test_a_brigade_of_new_accounts_cannot_settle_a_wrong_answer`):
+  flag items that get a burst of votes from accounts
   under 48 hours old all leaning the same way. That item's new-account votes
   then get trust 0 for the scoring pass.
 - **Carry-overs:** yesterday's most disputed items go into today's set (the
@@ -164,6 +166,10 @@ What a player sees on a normal day.
   overwrites the first cleanly.
 - **Weighted split on the reveal page:** the live split stays raw counts,
   since trust isn't known yet; the reveal page shows the weighted one.
+- **Settle on the Dawid-Skene posterior, not just the raw weighted share.**
+  Found in M0: when honest players are 75% accurate, the right answer can't
+  reach the 80% share needed to settle, even though Dawid-Skene is confident.
+  Pinned by `test_a_noisy_but_honest_crowd_still_settles_most_items`.
 - **`MIN_WEIGHT` and `MIN_SHARE` move into config**, so soft launch can use
   lower thresholds without code changes.
 - **Fix in KNOCK:** `scene_for_players()` repeats what the summary already

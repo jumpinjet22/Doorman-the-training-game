@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from datetime import date
 from pathlib import Path
 
 import psycopg
@@ -21,17 +22,23 @@ from dorman_scorer.consensus import consensus_file
 from dorman_scorer.scoring import score
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database-url", default=os.environ.get("DATABASE_URL"))
     parser.add_argument("--out-dir", type=Path, default=Path("."))
-    args = parser.parse_args()
+    parser.add_argument(
+        "--today",
+        type=date.fromisoformat,
+        default=None,
+        help="score as of this day (default: today in UTC, per the database)",
+    )
+    args = parser.parse_args(argv)
     if not args.database_url:
         parser.error("--database-url or DATABASE_URL is required")
 
     with psycopg.connect(args.database_url) as conn:
         items, votes = db.load(conn)
-        today = db.today(conn)
+        today = args.today or db.today(conn)
         players, verdicts = score(items, votes, today)
         db.save(conn, players, verdicts)
 

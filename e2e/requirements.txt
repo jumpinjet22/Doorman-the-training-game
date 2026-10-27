@@ -1,0 +1,7 @@
+# End-to-end and contract tests. From the repo root:  pip install -r e2e/requirements.txt
+# then:  playwright install chromium
+-e ./scorer[dev]
+pytest>=8
+pytest-playwright>=0.5
+axe-playwright-python>=0.1.8
+psycopg[binary]>=3.1
