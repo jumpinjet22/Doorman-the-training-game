@@ -1097,3 +1097,84 @@ async fn handles_are_unique_whatever_their_case(pool: PgPool) {
         None
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_board_counts_only_items_out_of_play(pool: PgPool) {
+    let items = seed_day(&pool, day("2026-10-27")).await;
+    let (item, other) = (&items[0], &items[1]);
+    let player = dorman_testkit::player_with_votes(
+        &pool,
+        day("2026-10-27"),
+        &[(item.id, valid_answer(item).as_str()), (other.id, "not it")],
+    )
+    .await;
+    assert!(dorman_db::set_handle(&pool, player, "Knocker")
+        .await
+        .unwrap());
+    for i in [item, other] {
+        sqlx::query(
+            "INSERT INTO consensus (item_id, label, share, total_weight, status, split)
+             VALUES ($1, $2, 1, 6, 'settled', '{}')",
+        )
+        .bind(i.id)
+        .bind(valid_answer(i))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO scoring_runs (day, started_at, finished_at, players, items,
+             settled, disputed, brigaded, export_path, config)
+         VALUES ('2026-10-28', now(), now(), 0, 0, 0, 0, 0, '', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    publish(
+        &pool,
+        day("2026-10-28"),
+        std::slice::from_ref(&item.knock_key),
+    )
+    .await;
+    let records = dorman_db::handle_records(&pool).await.unwrap();
+    assert_eq!(records, vec![("Knocker".to_string(), 0, 1, 0)]);
+    let week = dorman_db::weekly_standings(&pool, day("2026-10-26"), day("2026-10-28"))
+        .await
+        .unwrap();
+    assert_eq!(week, vec![("Knocker".to_string(), 1, 0, false)]);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn confidence_is_stored_with_the_vote(pool: PgPool) {
+    let items = seed_day(&pool, day("2026-10-27")).await;
+    let player = dorman_db::create_player(&pool).await.unwrap();
+    let today = Some(day("2026-10-27"));
+    for (item, confidence) in [(&items[0], Some("certain")), (&items[1], None)] {
+        let answer = valid_answer(item);
+        let recorded = dorman_db::record_vote_with_confidence(
+            &pool, player, item.id, today, &answer, 3000, confidence,
+        )
+        .await
+        .unwrap();
+        assert!(recorded);
+    }
+    let again = dorman_db::record_vote_with_confidence(
+        &pool,
+        player,
+        items[0].id,
+        today,
+        &valid_answer(&items[0]),
+        3000,
+        Some("unsure"),
+    )
+    .await
+    .unwrap();
+    assert!(!again, "a second answer to the same item is ignored");
+    let ids = [items[0].id, items[1].id];
+    assert_eq!(
+        dorman_db::player_confidences(&pool, player, &ids)
+            .await
+            .unwrap(),
+        vec![(items[0].id, "certain".to_string())]
+    );
+}
