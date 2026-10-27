@@ -1,0 +1,8 @@
+line-length = 100
+target-version = "py312"
+
+[lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[lint.isort]
+known-first-party = ["conftest", "dorman_scorer"]

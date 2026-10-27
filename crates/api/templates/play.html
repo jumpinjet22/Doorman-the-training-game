@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Who's At The Door?</title>
+<link rel="stylesheet" href="/static/play.css">
+</head>
+<body>
+<main>
+  <h1>🚪 Who's At The Door?</h1>
+  <p class="day">{{ day }}</p>
+  {% if items.is_empty() %}
+  <p>No game today. Come back tomorrow.</p>
+  {% endif %}
+  {% for item in items %}
+  <section class="card" data-item="{{ item.id }}">
+    <p class="prompt">{{ item.prompt }}</p>
+    <p class="line">&ldquo;{{ item.text }}&rdquo;</p>
+    {% if let Some(scene) = item.scene %}<p class="scene">📷 {{ scene }}</p>{% endif %}
+    {% for choice in item.choices %}
+    <button data-answer="{{ choice.value }}"
+      {% if let Some(answered) = item.answered %}disabled{% if answered.as_str() == choice.value.as_str() %} class="mine"{% endif %}{% endif %}>{{ choice.label }}</button>
+    {% endfor %}
+    <div class="split"></div>
+  </section>
+  {% endfor %}
+  <div id="turnstile" data-sitekey="{{ turnstile_site_key }}"></div>
+</main>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" defer></script>
+<script src="/static/play.js" defer></script>
+</body>
+</html>

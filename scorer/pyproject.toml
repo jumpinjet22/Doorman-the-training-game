@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dorman-scorer"
+version = "0.1.0"
+description = "Nightly trust and consensus scoring for Who's At The Door?"
+requires-python = ">=3.12"
+dependencies = ["numpy>=1.26", "psycopg[binary]>=3.1"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=5", "hypothesis>=6", "ruff>=0.6"]
+
+[project.scripts]
+dorman-scorer = "dorman_scorer.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["dorman_scorer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Large simulations run nightly (`pytest -m slow`), not on every push.
+addopts = "-m 'not slow'"
+markers = [
+  "sim: scorer runs against simulated crowds",
+  "slow: large simulations, deselected by default",
+  "db: needs Postgres (DATABASE_URL)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

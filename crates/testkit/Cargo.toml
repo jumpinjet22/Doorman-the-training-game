@@ -1,0 +1,13 @@
+[package]
+name = "dorman-testkit"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+dorman-core.workspace = true
+dorman-db.workspace = true
+chrono.workspace = true
+sqlx.workspace = true
+uuid.workspace = true

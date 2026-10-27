@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  DATABASE_URL: postgres://dorman:dorman@localhost:5432/dorman
+
+# Every job that touches the database gets its own Postgres. Tests create
+# (and drop) a fresh database per test or per run, so the role needs CREATEDB;
+# the service's POSTGRES_USER is a superuser.
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dorman
+          POSTGRES_PASSWORD: dorman
+          POSTGRES_DB: dorman
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U dorman" --health-interval 2s --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      # Each run executes that crate's unit, property and Postgres tests and
+      # fails under its line-coverage gate.
+      - name: dorman-core (gate 85%)
+        run: cargo llvm-cov -p dorman-core --all-features --fail-under-lines 85
+      - name: dorman-db (gate 85%)
+        run: cargo llvm-cov -p dorman-db --all-features --fail-under-lines 85
+      - name: dorman-api (gate 75%)
+        run: cargo llvm-cov -p dorman-api --all-features --fail-under-lines 75
+
+  scorer:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dorman
+          POSTGRES_PASSWORD: dorman
+          POSTGRES_DB: dorman
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U dorman" --health-interval 2s --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: scorer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff check . && ruff format --check .
+      # Unit, property, simulation and Postgres tests, with the 90% gate.
+      - run: pytest --cov=dorman_scorer --cov-report=term-missing --cov-fail-under=90
+
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: dorman
+          POSTGRES_PASSWORD: dorman
+          POSTGRES_DB: dorman
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U dorman" --health-interval 2s --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      # The contract test runs KNOCK's real export/import scripts.
+      - uses: actions/checkout@v4
+        with:
+          repository: jumpinjet22/KNOCK
+          path: knock
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the binaries with the test clock
+        run: cargo build -p dorman-ingest -p dorman-api --features dorman-api/test-clock
+      - run: pip install -r e2e/requirements.txt -e ./knock
+      - run: playwright install --with-deps chromium
+      - run: ruff check e2e && ruff format --check e2e
+      - name: Browser and contract tests
+        env:
+          DORMAN_BIN_DIR: target/debug
+          KNOCK_PATH: knock
+        run: pytest e2e --browser chromium
