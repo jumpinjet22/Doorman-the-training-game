@@ -186,6 +186,7 @@ def test_tomorrows_carry_over_is_todays_least_settled_item(bin_dir, base_db_url,
     try:
         ingest(bin_dir, db_url, "migrate")
         ingest(bin_dir, db_url, "load", str(FIXTURE_BATCH))
+        ingest(bin_dir, db_url, "approve", batch["batch"])
         ingest(bin_dir, db_url, "daily", "--day", DAY)
         with psycopg.connect(db_url) as conn:
             items = dict(conn.execute("SELECT knock_key, id FROM items").fetchall())
