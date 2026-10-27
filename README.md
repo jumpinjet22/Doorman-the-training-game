@@ -161,6 +161,10 @@ answers each, so use the soft-launch profile until real traffic exists.
 - Terms, privacy policy, 13+ age gate (see section 8 of the plan).
 - Switching sqlx to compile-time-checked `query!` macros once CI has Postgres.
 
+## Security
+
+Please report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
+
 ## Contributors
 
 Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/docs/en/emoji-key)):
