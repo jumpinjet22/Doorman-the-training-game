@@ -1372,6 +1372,8 @@ async fn the_about_page_explains_the_data(pool: PgPool) {
     let (status, _, page) = h.get("/about", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(page.contains("What your answers are for"));
+    assert!(page.contains("Your answers train a model."));
+    assert!(page.contains("None of these visitors are real."));
     assert!(page.contains("We never store your IP address"));
 }
 
