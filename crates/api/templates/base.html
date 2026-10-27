@@ -4,11 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Who's At The Door?{% endblock %}</title>
+<link rel="icon" href="/static/brand/favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#10161d">
 <link rel="stylesheet" href="/static/play.css">
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="/">🚪 Who's At The Door?</a>
+  <a class="brand" href="/">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="/static/brand/knock-mark-dark.svg">
+      <img src="/static/brand/knock-mark-light.svg" alt="" width="32" height="32">
+    </picture>
+    <span>Who's At The Door?</span>
+  </a>
   <nav aria-label="Pages">
     <a href="/">Today</a>
     <a href="/yesterday">Yesterday</a>
