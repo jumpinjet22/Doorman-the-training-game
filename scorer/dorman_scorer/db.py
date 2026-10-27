@@ -17,26 +17,24 @@ def load(conn: psycopg.Connection) -> tuple[list[Item], list[Vote]]:
     items: list[Item] = []
     options: dict[str, list[str]] = {}
     rows = conn.execute(
-        """SELECT i.id::text, i.knock_key, i.mode, i.gold_answer, i.payload,
+        """SELECT i.id::text, i.item_key, i.mode, i.gold_answer, i.payload,
                   (SELECT min(d.day) FROM daily_sets d WHERE i.id = ANY (d.item_ids))
            FROM items i"""
     ).fetchall()
-    for item_id, knock_key, mode, gold, payload, first_shown in rows:
-        judge = payload.get("judge") or {}
+    for item_id, item_key, mode, gold, payload, first_shown in rows:
         replies = payload.get("replies") or []
         items.append(
             Item(
                 id=item_id,
-                knock_key=knock_key,
+                item_key=item_key,
                 mode=mode,
                 gold_answer=gold,
-                generator_intent=payload.get("generator_intent", ""),
-                judge_category_correct=judge.get("category_correct"),
-                reply_keys=tuple(r["knock_key"] for r in replies),
+                intended_intent=payload.get("intended_intent", ""),
+                reply_keys=tuple(r["item_key"] for r in replies),
                 first_shown=first_shown,
             )
         )
-        choices = payload.get("options") or [r["knock_key"] for r in replies] + ["both_bad"]
+        choices = payload.get("options") or [r["item_key"] for r in replies] + ["both_bad"]
         options[item_id] = choices
 
     votes = []
@@ -85,7 +83,6 @@ class Run:
     settled: int
     disputed: int
     brigaded: int
-    export_path: str
     config: dict[str, float | int]
     # Settings that switched a defence off for this run, in words.
     warnings: list[str] = field(default_factory=list)
@@ -97,14 +94,13 @@ def record_run(conn: psycopg.Connection, run: Run) -> None:
     """
     conn.execute(
         """INSERT INTO scoring_runs (day, started_at, finished_at, players, items, settled,
-                                     disputed, brigaded, export_path, config, warnings)
-           VALUES (%s, now(), clock_timestamp(), %s, %s, %s, %s, %s, %s, %s, %s)
+                                     disputed, brigaded, config, warnings)
+           VALUES (%s, now(), clock_timestamp(), %s, %s, %s, %s, %s, %s, %s)
            ON CONFLICT (day) DO UPDATE SET started_at = excluded.started_at,
              finished_at = excluded.finished_at, players = excluded.players,
              items = excluded.items, settled = excluded.settled,
              disputed = excluded.disputed, brigaded = excluded.brigaded,
-             export_path = excluded.export_path, config = excluded.config,
-             warnings = excluded.warnings""",
+             config = excluded.config, warnings = excluded.warnings""",
         (
             run.day,
             run.players,
@@ -112,7 +108,6 @@ def record_run(conn: psycopg.Connection, run: Run) -> None:
             run.settled,
             run.disputed,
             run.brigaded,
-            run.export_path,
             json.dumps(run.config),
             json.dumps(run.warnings),
         ),

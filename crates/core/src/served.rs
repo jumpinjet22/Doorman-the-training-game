@@ -83,7 +83,7 @@ mod tests {
             "1000.abc",
             &token[..10],
         ] {
-            assert_eq!(served_at(KEY, junk, "item", ""), None, "{junk}");
+            assert_eq!(served_at(KEY, junk, "item", ""), None);
         }
     }
 

@@ -1,4 +1,4 @@
-"""Turning weighted votes into per-item verdicts, and the export KNOCK reads."""
+"""Turning weighted votes into per-item verdicts."""
 
 from __future__ import annotations
 
@@ -10,15 +10,12 @@ from dorman_scorer.config import Config
 from dorman_scorer.model import Item, Vote
 
 BOTH_BAD = "both_bad"
-# KNOCK judge category_correct averages (0-10) treated as a confident verdict.
-JUDGE_SURE_RIGHT = 7.0
-JUDGE_SURE_WRONG = 3.0
 
 
 @dataclass
 class Verdict:
     item_id: str
-    knock_key: str
+    item_key: str
     mode: str
     status: str  # "open" | "settled" | "disputed"
     label: str | None
@@ -33,16 +30,6 @@ class Verdict:
     zeroed_votes: int = 0
 
 
-def _judge_disagrees(item: Item, label: str) -> bool:
-    """The brigade guard: a crowd answer that contradicts a confident judge."""
-    score = item.judge_category_correct
-    if item.mode != "intent" or score is None:
-        return False
-    if score >= JUDGE_SURE_RIGHT and label != item.generator_intent:
-        return True
-    return score <= JUDGE_SURE_WRONG and label == item.generator_intent
-
-
 def verdict(
     item: Item,
     votes: list[Vote],
@@ -53,8 +40,8 @@ def verdict(
 ) -> Verdict:
     """`posterior` is Dawid-Skene's answer -> probability for this item.
 
-    An item settles once it has `min_weight` of trust behind it, the judge
-    doesn't contradict it, and either the weighted share is overwhelming or
+    An item settles once it has `min_weight` of trust behind it and either the
+    weighted share is overwhelming or
     Dawid-Skene is confident and the weight still leans clearly the same way.
     The second path is what lets a noisy but honest crowd settle: 75%-right
     players never reach an 80% share, but their agreement is still strong
@@ -76,11 +63,11 @@ def verdict(
     )
     status = "open"
     if label is not None and confident and total >= config.min_weight:
-        status = "disputed" if _judge_disagrees(item, label) else "settled"
+        status = "settled"
     elif item.first_shown is not None and today - item.first_shown >= config.dispute_after:
         status = "disputed"
     split = dict(sorted(weight_by_label.items()))
-    return Verdict(item.id, item.knock_key, item.mode, status, label, share, total, split, p_label)
+    return Verdict(item.id, item.item_key, item.mode, status, label, share, total, split, p_label)
 
 
 def gold_verdicts(
@@ -95,8 +82,8 @@ def gold_verdicts(
     decided by `verdict` from the crowd's votes, exactly as any other item
     is, and never from the known answer. A row that said "settled on the
     right answer" whatever the split would point at gold, and would hand the
-    answer to anyone who saw it before the card came round again. Never
-    exported (KNOCK already knows the answer) and not counted in the run log.
+    answer to anyone who saw it before the card came round again. Not
+    counted in the run log; datasets take its answer from the item, not from here.
 
     `posteriors` should come from a Dawid-Skene pass that wasn't told the
     gold answers, so the posterior route to settling works the same way here.
@@ -110,25 +97,3 @@ def gold_verdicts(
         for i in items
         if i.gold_answer is not None
     ]
-
-
-def consensus_file(day: date, verdicts: list[Verdict]) -> dict[str, object]:
-    """`knock-game-consensus` v1, as KNOCK's import_game_consensus.py reads it.
-    Gold items are left out: KNOCK already knows those answers.
-    """
-    return {
-        "format": "knock-game-consensus",
-        "version": 1,
-        "day": day.isoformat(),
-        "items": [
-            {
-                "knock_key": v.knock_key,
-                "mode": v.mode,
-                "status": v.status,
-                "label": v.label,
-                "share": round(v.share, 4),
-                "total_weight": round(v.total_weight, 3),
-            }
-            for v in verdicts
-        ],
-    }

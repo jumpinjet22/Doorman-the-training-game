@@ -1,27 +1,27 @@
 # Dorman: Who's At The Door?
 
-A free daily web game that crowd-reviews [KNOCK](https://github.com/jumpinjet22/KNOCK)'s
-**synthetic** training data. Players guess why a visitor is at the door, or pick
+A free daily web game that crowd-reviews **synthetic** data for fine-tuning a
+doorbell-assistant model. Players guess why a visitor is at the door, or pick
 the better of two replies. Gold questions and Dawid-Skene scoring quietly turn
-trolls' votes down. Each night the crowd's verdicts go back to KNOCK as training
-reviews.
+trolls' votes down. The crowd's verdicts, with a maintainer's review, become
+the training dataset.
 
-The design lives in KNOCK at `plans/knock-game.md`. This repo is the game.
+This repo is self-contained: it makes its own data, reviews it, and exports
+it. It does not depend on any other codebase.
 
 ## How data moves
 
 ```
-KNOCK scratch box                       Dorman
-scripts/export_game_batch.py ─ batch.json ─▶ dorman-ingest load
-                                           dorman-ingest daily    (publishes a day's set)
-                                           dorman-api             (players vote)
-                                           dorman-scorer          (nightly: trust + consensus)
-scripts/import_game_consensus.py ◀─ consensus-<date>.json ─┘
+a dorman-batch file ─▶ dorman-ingest load      (pending review)
+                       dorman-ingest review/approve
+                       dorman-ingest daily      (publishes a day's set)
+                       dorman-api               (players vote)
+                       dorman-scorer            (nightly: trust + consensus, saved in Postgres)
 ```
 
-Files only, moved by a person, in both directions. KNOCK never talks to the
-game and the game never talks to KNOCK. Batches only ever come from a synthetic
-audit log; KNOCK's export script refuses anything else.
+A batch is a `dorman-batch` v1 JSON file (see `fixtures/batch.example.json`
+and `crates/core/src/batch.rs`). Everything downstream reads and writes
+Postgres; nothing is exchanged with another system.
 
 ## Layout
 
@@ -32,7 +32,7 @@ audit log; KNOCK's export script refuses anything else.
 | `crates/ingest` | `dorman-ingest`: `migrate`, `load <batch.json>`, `review`/`approve <batch>`, `daily [--day] [--gold-showings N]` (gold retires after N sets, default 5; warns when it runs low). |
 | `crates/api` | `dorman-api`: Axum server, renders pages itself (askama + vanilla JS): today's game one card at a time, results and share card, Overtime, ranks, `/leaderboard`, `/yesterday`, `/about`. |
 | `scorer/` | `dorman-scorer`: Python nightly job. Gold trust, Dawid-Skene, behavior flags, consensus. |
-| `fixtures/batch.example.json` | A real batch from KNOCK's export script, used by tests. |
+| `fixtures/batch.example.json` | An example `dorman-batch` file, used by tests. |
 
 ## Running it locally
 
@@ -46,13 +46,15 @@ cargo run -p dorman-ingest -- approve example-1    # ...then let it into daily s
 cargo run -p dorman-ingest -- daily --day "$(date -u +%F)"
 
 # Cloudflare's always-pass Turnstile test keys; never use them in production.
-DORMAN_COOKIE_SECRET=$(openssl rand -hex 32) DORMAN_SECURE_COOKIES=false \
+# The server refuses them unless the public origin is http:// on localhost,
+# 127.0.0.1 or [::1].
+DORMAN_COOKIE_SECRET=$(openssl rand -hex 32) \
 DORMAN_LAUNCH_DATE="$(date -u +%F)" \
 DORMAN_TURNSTILE_SITE_KEY=1x00000000000000000000AA \
 DORMAN_TURNSTILE_SECRET=1x0000000000000000000000000000000AA \
   cargo run -p dorman-api          # http://127.0.0.1:8080
 
-cd scorer && pip install -e ".[dev]" && python -m dorman_scorer --out-dir exports/
+cd scorer && pip install -e ".[dev]" && python -m dorman_scorer
 ```
 
 A loaded batch is `pending` until someone runs `approve`; only approved
@@ -70,14 +72,13 @@ ignores it.
 
 | Variable | Default | What |
 |---|---|---|
-| `DORMAN_COOKIE_SECRET` | required | 32+ bytes; signs the player cookie and salts network hashes |
+| `DORMAN_COOKIE_SECRET` or `DORMAN_COOKIE_SECRET_FILE` | one required | 32+ random bytes (`openssl rand -hex 32`); signs the player cookie and salts network hashes. Short or repetitive values are refused. Prefer the file form (e.g. a mounted secret); there is deliberately no documented CLI flag, since flags show in the process list |
 | `DORMAN_LAUNCH_DATE` | required | day 1 of the game (`YYYY-MM-DD`); day numbers on the page and share card count from it |
-| `DORMAN_TURNSTILE_SITE_KEY`, `DORMAN_TURNSTILE_SECRET` | required | Cloudflare Turnstile. If Cloudflare can't be reached, votes are refused |
-| `DORMAN_PUBLIC_ORIGIN` | `http://<bind>` | e.g. `https://example.com`; POSTs from any other `Origin` get 403 |
+| `DORMAN_TURNSTILE_SITE_KEY`, `DORMAN_TURNSTILE_SECRET` | required | Cloudflare Turnstile. If Cloudflare can't be reached, votes are refused. A token passes only if Cloudflare says it was solved on the host of `DORMAN_PUBLIC_ORIGIN` for the `vote` action. Cloudflare's test keys are refused unless the origin is `http://` on localhost, 127.0.0.1 or [::1] |
+| `DORMAN_PUBLIC_ORIGIN` | `http://<bind>` | e.g. `https://example.com`; POSTs from any other `Origin` get 403. HSTS is sent only when this is https |
 | `DORMAN_CLIENT_IP_HEADER` | unset (TCP peer) | e.g. `Fly-Client-IP`; set only behind a proxy that overwrites it |
 | `DORMAN_VOTES_PER_MINUTE` | 30 | per player |
 | `DORMAN_NEW_PLAYERS_PER_HOUR` | 20 | per /24 (IPv4) or /48 (IPv6), stored as a salted hash for 24 hours |
-| `DORMAN_SECURE_COOKIES` | true | turn off only for local http |
 
 Behind a proxy or load balancer, set `DORMAN_CLIENT_IP_HEADER`: without it,
 every client shares the proxy's address, so the whole site gets one network's
@@ -91,12 +92,23 @@ created count against it, so refused or failed attempts don't use it up, and
 a vote that's over a rate limit is refused before its single-use Turnstile
 token is spent.
 
-Then, on the KNOCK box:
+### Rotating the cookie secret
 
-```bash
-python scripts/import_game_consensus.py exports/consensus-<date>.json \
-  --audit-log <the synthetic log> --dry-run
-```
+The cookie-signing key and the network-hash salt are derived from the cookie
+secret independently (SHA-512 of the secret for the key; SHA-256 of a
+`dorman network salt` label and the secret for the salt), so leaking one
+reveals neither the other nor the secret. Both change when the secret does:
+
+- every player's cookie stops verifying, so everyone becomes a new anonymous
+  player once (their past votes stay, but their streak and results page start
+  over);
+- every network's new-player window resets, since the stored hashes no
+  longer match.
+
+So rotate only when the secret may have leaked, ideally at a quiet hour:
+write a new `openssl rand -hex 32` to the secret file (or variable) and
+restart every instance together, since instances with different secrets
+reject each other's cookies.
 
 ## Tests
 
@@ -110,7 +122,7 @@ cargo test --all-features                     # unit, property, Postgres and HTT
 cd scorer && pytest                           # unit, property, simulation, Postgres
 cd scorer && pytest -m slow                   # large simulations (nightly)
 cd .. && pip install -r e2e/requirements.txt && playwright install chromium
-KNOCK_PATH=../KNOCK pytest e2e                # real browser + KNOCK contract
+pytest e2e                                   # real browser
 ```
 
 | Suite | Where |
@@ -123,7 +135,6 @@ KNOCK_PATH=../KNOCK pytest e2e                # real browser + KNOCK contract
 | Simulated crowds (`-m sim`) | `scorer/tests/sim.py`, `test_simulation.py` |
 | Scorer against Postgres (`-m db`) | `scorer/tests/test_db.py` |
 | Browser, accessibility (axe), leaks | `e2e/test_play.py` |
-| KNOCK export -> Dorman -> KNOCK import | `e2e/test_contract.py` (needs `KNOCK_PATH`) |
 
 The E2E server is built with the `test-clock` feature, which lets tests set
 the time through a file and point Turnstile checks at a fake Cloudflare.
@@ -168,8 +179,7 @@ fail CI the moment they start passing, so the marker gets removed with the fix.
 - An item **settles** with ≥ 5.0 total weight and either ≥ 80% weighted share,
   or a Dawid-Skene posterior ≥ 0.95 with ≥ 60% weighted share. If it hasn't
   settled 3 days after it was first shown, it's **disputed** and goes to a
-  human. A settled answer that contradicts a confident KNOCK judge is also
-  disputed.
+  human.
 - Each run is one transaction and is logged in `scoring_runs`; rerunning a
   day replaces it. A run with `new_account_hours` at 0 (soft launch) logs a
   warning and records it in `scoring_runs.warnings`. `consensus.split` holds

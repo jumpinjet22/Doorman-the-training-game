@@ -6,11 +6,17 @@ use std::net::{IpAddr, SocketAddr};
 
 use axum::extract::{ConnectInfo, FromRequestParts, Request, State};
 use axum::http::request::Parts;
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
 use crate::AppState;
+
+const PERMISSIONS_POLICY_HEADER: HeaderName = HeaderName::from_static("permissions-policy");
+const CROSS_ORIGIN_OPENER_POLICY_HEADER: HeaderName =
+    HeaderName::from_static("cross-origin-opener-policy");
+const CROSS_ORIGIN_RESOURCE_POLICY_HEADER: HeaderName =
+    HeaderName::from_static("cross-origin-resource-policy");
 
 /// Scripts come only from this site and Cloudflare's Turnstile widget; no
 /// inline script or style anywhere.
@@ -23,21 +29,49 @@ pub const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; \
 pub const STRICT_TRANSPORT_SECURITY: &str = "max-age=63072000; includeSubDomains";
 /// Turnstile needs to see which site it's on, so send the origin and nothing more.
 pub const REFERRER_POLICY: &str = "strict-origin";
+/// The game uses no device or payment APIs, so neither the page nor the
+/// Turnstile iframe gets them. (Clipboard stays: the share card copies.)
+pub const PERMISSIONS_POLICY: &str = "accelerometer=(), bluetooth=(), camera=(), \
+    display-capture=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), \
+    microphone=(), midi=(), payment=(), serial=(), usb=()";
+/// Keeps other sites' windows out of our browsing context group. It only
+/// governs top-level windows (popups and openers), not iframes, so the
+/// Turnstile iframe is unaffected; there is no COEP, which is what would
+/// constrain it.
+pub const CROSS_ORIGIN_OPENER_POLICY: &str = "same-origin";
+/// Nothing we serve is meant to be loaded by another site.
+pub const CROSS_ORIGIN_RESOURCE_POLICY: &str = "same-origin";
 
 /// Adds the security headers to every response, and `no-store` to any
 /// response that didn't choose its own caching: pages and API answers are
-/// personal to the player.
-pub async fn headers(request: Request, next: Next) -> Response {
+/// personal to the player. HSTS goes out only when the site is served over
+/// https, so a plain-http deploy (or a proxy that forwards http) never
+/// sends it.
+pub async fn headers(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
     for (name, value) in [
         (header::CONTENT_SECURITY_POLICY, CONTENT_SECURITY_POLICY),
-        (header::STRICT_TRANSPORT_SECURITY, STRICT_TRANSPORT_SECURITY),
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         (header::REFERRER_POLICY, REFERRER_POLICY),
         (header::X_FRAME_OPTIONS, "DENY"),
+        (PERMISSIONS_POLICY_HEADER, PERMISSIONS_POLICY),
+        (
+            CROSS_ORIGIN_OPENER_POLICY_HEADER,
+            CROSS_ORIGIN_OPENER_POLICY,
+        ),
+        (
+            CROSS_ORIGIN_RESOURCE_POLICY_HEADER,
+            CROSS_ORIGIN_RESOURCE_POLICY,
+        ),
     ] {
         headers.insert(name, HeaderValue::from_static(value));
+    }
+    if state.public_origin.starts_with("https://") {
+        headers.insert(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static(STRICT_TRANSPORT_SECURITY),
+        );
     }
     headers
         .entry(header::CACHE_CONTROL)

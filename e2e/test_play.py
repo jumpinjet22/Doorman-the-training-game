@@ -70,12 +70,12 @@ def _publish(dorman: Dorman, bin_dir: Path, day: str) -> None:
     for item in batch["items"]:
         if item["mode"] == "pair":
             for reply in item["replies"]:
-                reply["knock_key"] = f"{tag}{reply['knock_key']}"
-            item["knock_key"] = ":".join(["pair", *(r["knock_key"] for r in item["replies"])])
+                reply["item_key"] = f"{tag}{reply['item_key']}"
+            item["item_key"] = ":".join(["pair", *(r["item_key"] for r in item["replies"])])
             if item["gold_answer"]:
                 item["gold_answer"] = f"{tag}{item['gold_answer']}"
         else:
-            item["knock_key"] = f"{tag}{item['knock_key']}"
+            item["item_key"] = f"{tag}{item['item_key']}"
     path = Path(dorman.clock_file).parent / f"batch-{day}.json"
     path.write_text(json.dumps(batch), encoding="utf-8")
     ingest(bin_dir, dorman.db_url, "load", str(path))
@@ -83,7 +83,7 @@ def _publish(dorman: Dorman, bin_dir: Path, day: str) -> None:
     ingest(bin_dir, dorman.db_url, "daily", "--day", day)
 
 
-def _run_scorer(dorman: Dorman, today: str, out: Path) -> None:
+def _run_scorer(dorman: Dorman, today: str) -> None:
     """The night run. One player is the whole crowd here, so the bar to settle
     is lowered until their answers are enough: gold is decided by the crowd
     like everything else, never settled on its known answer regardless. The
@@ -96,8 +96,6 @@ def _run_scorer(dorman: Dorman, today: str, out: Path) -> None:
             "dorman_scorer",
             "--database-url",
             dorman.db_url,
-            "--out-dir",
-            str(out),
             "--today",
             today,
             "--min-weight",
@@ -123,6 +121,11 @@ def test_play_a_full_day_resume_after_reload_and_copy_the_card(sized: Page, dorm
         "script-src 'self' https://challenges.cloudflare.com"
         in (response.headers["content-security-policy"])
     )
+    assert "camera=()" in response.headers["permissions-policy"]
+    assert response.headers["cross-origin-opener-policy"] == "same-origin"
+    assert response.headers["cross-origin-resource-policy"] == "same-origin"
+    # Served over plain http, so no HSTS.
+    assert "strict-transport-security" not in response.headers
     expect(page.locator(".day")).to_have_text(f"Day 1 · {DAY}")
     expect(page.locator(".count")).to_have_text("Card 1 of 6")
     assert _card(page).count() == 1
@@ -185,7 +188,7 @@ def test_the_next_morning_the_card_fills_in_and_the_streak_is_two(
     # The night run, then the next morning, before the next set goes up
     # (anything back in it would stay hidden). This checks the card fills in,
     # not settling thresholds, so the run's bar is low enough for one player.
-    _run_scorer(dorman, second, tmp_path)
+    _run_scorer(dorman, second)
     dorman.set_clock(f"{second}T08:00:00Z")
     page.goto("/yesterday")
     filled = _card_text(page)
@@ -281,7 +284,7 @@ def test_the_pages_leak_no_answers(page: Page) -> None:
     for path in ("/", "/yesterday", "/about"):
         page.goto(path)
         html = page.content()
-        for field in ("gold", "generator", "judge", "knock_key", "category_correct"):
+        for field in ("gold", "intended_intent", "item_key"):
             assert field not in html, f"{path} mentions {field}"
         assert not re.search(r"\bexample-1\b", html)
 
@@ -371,6 +374,28 @@ def test_a_cloudflare_outage_blocks_votes_until_it_recovers(
     )
 
 
+def test_a_token_solved_elsewhere_or_for_another_action_is_refused(
+    page: Page, dorman: Dorman, cloudflare: FakeCloudflare
+) -> None:
+    page.goto("/")
+    card = _card(page)
+    item_id = card.get_attribute("data-item")
+    before = dorman.query("SELECT count(*) FROM votes WHERE item_id = %s", item_id)[0][0]
+
+    for hostname, action in (("evil.example", "vote"), ("127.0.0.1", "login")):
+        cloudflare.hostname, cloudflare.action = hostname, action
+        card.locator("button").first.click()
+        expect(card.locator(".split")).to_have_text("Couldn't confirm you're human. Try again.")
+        expect(card.locator("button").first).to_be_enabled()
+        assert dorman.query("SELECT count(*) FROM votes WHERE item_id = %s", item_id)[0][0] == (
+            before
+        )
+
+    cloudflare.hostname, cloudflare.action = "127.0.0.1", "vote"
+    card.locator("button").first.click()
+    expect(card.locator(".split")).to_contain_text("%")
+
+
 def test_a_batch_is_played_only_once_reviewed_and_its_markup_stays_text(
     page: Page, dorman: Dorman, bin_dir: Path, tmp_path: Path
 ) -> None:
@@ -379,7 +404,7 @@ def test_a_batch_is_played_only_once_reviewed_and_its_markup_stays_text(
     batch["batch"] = "markup"
     items = [i for i in batch["items"] if i["mode"] == "intent" and not i["gold_answer"]][:2]
     for n, item in enumerate(items):
-        item["knock_key"] = f"markup-{n}"
+        item["item_key"] = f"markup-{n}"
         item["text"] = "<script>alert(1)</script>"
         item["scene"] = '<img src=x onerror="alert(2)">'
     batch["items"] = items
@@ -388,7 +413,7 @@ def test_a_batch_is_played_only_once_reviewed_and_its_markup_stays_text(
 
     def keys_on(day: str) -> set[str]:
         rows = dorman.query(
-            "SELECT i.knock_key FROM daily_sets d JOIN items i ON i.id = ANY (d.item_ids)"
+            "SELECT i.item_key FROM daily_sets d JOIN items i ON i.id = ANY (d.item_ids)"
             " WHERE d.day = %s",
             day,
         )

@@ -55,10 +55,9 @@ class Config:
 # Friends-only soft launch (plan M7): fewer players, so a lower bar to settle.
 # Brigade detection is off: every account is new on launch day, and since an
 # account's age is fixed when it votes, those votes would be zeroed for good.
-# It's invite-only, so there's nobody to brigade. Dawid-Skene, cohort
-# detection and the judge guard still apply, and every run with the age check
-# off logs a warning and records it in scoring_runs, so it can't stay off
-# unnoticed after launch.
+# It's invite-only, so there's nobody to brigade. Dawid-Skene and cohort
+# detection still apply, and every run with the age check off logs a warning
+# and records it in scoring_runs, so it can't stay off unnoticed after launch.
 SOFT_LAUNCH = Config(min_weight=2.0, min_share=0.7, new_account_hours=0.0)
 PROFILES = {"default": Config(), "soft-launch": SOFT_LAUNCH}
 

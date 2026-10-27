@@ -1,5 +1,5 @@
 //! What a browser is allowed to see. A stored item carries its gold answer,
-//! the generator's label and judge scores; none of that leaves through here.
+//! the generator's label; none of that leaves through here.
 
 use askama::Template;
 use dorman_core::batch::{PairItem, Reply};
@@ -246,26 +246,27 @@ pub fn intent_label(intent: &str) -> String {
 pub fn choice_label(item: &BatchItem, answer: &str) -> String {
     match item {
         BatchItem::Intent(_) => intent_label(answer),
-        BatchItem::Pair(pair) => match reply_order(pair).iter().position(|r| r.knock_key == answer)
-        {
-            Some(0) => "Reply A".to_string(),
-            Some(_) => "Reply B".to_string(),
-            None if answer == BOTH_BAD => "Both bad".to_string(),
-            None => "Something else".to_string(),
-        },
+        BatchItem::Pair(pair) => {
+            match reply_order(pair).iter().position(|r| r.item_key == answer) {
+                Some(0) => "Reply A".to_string(),
+                Some(_) => "Reply B".to_string(),
+                None if answer == BOTH_BAD => "Both bad".to_string(),
+                None => "Something else".to_string(),
+            }
+        }
     }
 }
 
 /// A pair's replies in the order players see them, shuffled per item so
-/// whichever reply KNOCK wrote first isn't always A. Stable, so everyone
+/// whichever reply was written first isn't always A. Stable, so everyone
 /// sees the same order and a reload doesn't swap them.
 pub fn reply_order(pair: &PairItem) -> Vec<&Reply> {
     let keys = seeded_shuffle(
-        &pair.knock_key,
-        pair.replies.iter().map(|r| r.knock_key.as_str()).collect(),
+        &pair.item_key,
+        pair.replies.iter().map(|r| r.item_key.as_str()).collect(),
     );
     keys.iter()
-        .filter_map(|key| pair.replies.iter().find(|r| r.knock_key == *key))
+        .filter_map(|key| pair.replies.iter().find(|r| r.item_key == *key))
         .collect()
 }
 
@@ -293,7 +294,7 @@ impl PublicItem {
                     .into_iter()
                     .zip(["A", "B"])
                     .map(|(reply, letter)| Choice {
-                        value: reply.knock_key.clone(),
+                        value: reply.item_key.clone(),
                         label: format!("{letter}: \u{201c}{}\u{201d}", reply.text),
                     })
                     .collect();
@@ -325,14 +326,14 @@ mod tests {
     fn stored(item: &BatchItem, options: Vec<String>) -> StoredItem {
         StoredItem {
             id: Uuid::nil(),
-            knock_key: item.knock_key().into(),
+            item_key: item.item_key().into(),
             item: item.clone(),
             options,
         }
     }
 
     #[test]
-    fn a_card_never_contains_gold_or_judge_data() {
+    fn a_card_never_contains_gold_or_generator_data() {
         let batch = Batch::parse(EXAMPLE).unwrap();
         for item in &batch.items {
             let public = PublicItem::from_stored(&stored(item, vec!["delivery".into()]), None);
@@ -352,14 +353,7 @@ mod tests {
             }
             .render()
             .unwrap();
-            for field in [
-                "gold",
-                "generator",
-                "judge",
-                "category_correct",
-                "safety",
-                "knock_key",
-            ] {
+            for field in ["gold", "intended_intent", "safety", "item_key"] {
                 assert!(!html.contains(field), "page mentions {field}");
             }
         }
@@ -400,22 +394,22 @@ mod tests {
         else {
             unreachable!()
         };
-        // Over many items, the first reply KNOCK wrote lands on A about half the time.
+        // Over many items, the first reply written lands on A about half the time.
         let mut first_is_a = 0;
         for n in 0..200 {
             let mut pair = template.clone();
-            pair.knock_key = format!("pair:{n}");
+            pair.item_key = format!("pair:{n}");
             let order = reply_order(&pair);
             assert_eq!(order.len(), 2);
             assert_eq!(reply_order(&pair), order, "stable");
-            if order[0].knock_key == pair.replies[0].knock_key {
+            if order[0].item_key == pair.replies[0].item_key {
                 first_is_a += 1;
             }
             let item = BatchItem::Pair(pair.clone());
             let public = PublicItem::from_stored(&stored(&item, vec![]), None);
-            assert_eq!(public.choices[0].value, order[0].knock_key);
-            assert_eq!(choice_label(&item, &order[0].knock_key), "Reply A");
-            assert_eq!(choice_label(&item, &order[1].knock_key), "Reply B");
+            assert_eq!(public.choices[0].value, order[0].item_key);
+            assert_eq!(choice_label(&item, &order[0].item_key), "Reply A");
+            assert_eq!(choice_label(&item, &order[1].item_key), "Reply B");
         }
         assert!((60..140).contains(&first_is_a), "{first_is_a} of 200");
         let item = BatchItem::Pair(template.clone());

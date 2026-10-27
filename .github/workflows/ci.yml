@@ -1,8 +1,17 @@
 name: CI
 
+# Pushes to main, plus every PR. A PR branch's own pushes are covered by the
+# pull_request run, so they don't need a second run of their own.
 on:
   push:
+    branches: [main]
   pull_request:
+
+# A newer push to the same PR makes the older run pointless; cancel it. Runs
+# on main always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Nothing here writes to the repo, an issue or a PR.
 permissions:
@@ -91,11 +100,6 @@ jobs:
           --health-retries 20
     steps:
       - uses: actions/checkout@v7
-      # The contract test runs KNOCK's real export/import scripts.
-      - uses: actions/checkout@v7
-        with:
-          repository: jumpinjet22/KNOCK
-          path: knock
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
@@ -105,11 +109,10 @@ jobs:
           python-version: "3.12"
       - name: Build the binaries with the test clock
         run: cargo build -p dorman-ingest -p dorman-api --features dorman-api/test-clock
-      - run: pip install -r e2e/requirements.txt -e ./knock
+      - run: pip install -r e2e/requirements.txt
       - run: playwright install --with-deps chromium
       - run: ruff check e2e && ruff format --check e2e
-      - name: Browser and contract tests
+      - name: Browser tests
         env:
           DORMAN_BIN_DIR: target/debug
-          KNOCK_PATH: knock
         run: pytest e2e --browser chromium

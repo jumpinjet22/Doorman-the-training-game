@@ -28,7 +28,7 @@ pub async fn migrate(pool: &PgPool) -> Result<(), sqlx::migrate::MigrateError> {
 #[derive(Debug, Clone)]
 pub struct StoredItem {
     pub id: Uuid,
-    pub knock_key: String,
+    pub item_key: String,
     pub item: BatchItem,
     /// Choices for an intent item (empty for pair items).
     pub options: Vec<String>,
@@ -46,13 +46,13 @@ fn stored_item(row: &sqlx::postgres::PgRow) -> Result<StoredItem, Error> {
     let item = serde_json::from_value(payload).map_err(|e| Error::Decode(e.into()))?;
     Ok(StoredItem {
         id: row.try_get("id")?,
-        knock_key: row.try_get("knock_key")?,
+        item_key: row.try_get("item_key")?,
         item,
         options,
     })
 }
 
-/// Stores one batch item. Returns false when its knock_key is already loaded.
+/// Stores one batch item. Returns false when its item_key is already loaded.
 /// A batch seen for the first time starts out pending review.
 pub async fn insert_item(
     pool: &PgPool,
@@ -63,8 +63,8 @@ pub async fn insert_item(
     let mut payload = serde_json::to_value(item).map_err(|e| Error::Encode(e.into()))?;
     if let BatchItem::Intent(intent) = item {
         let options = intent_options(
-            &intent.knock_key,
-            &intent.generator_intent,
+            &intent.item_key,
+            &intent.intended_intent,
             intent.gold_answer.as_deref(),
             intents,
             INTENT_OPTION_COUNT,
@@ -76,12 +76,12 @@ pub async fn insert_item(
         .execute(pool)
         .await?;
     let result = sqlx::query(
-        "INSERT INTO items (id, knock_key, mode, payload, gold_answer, batch)
+        "INSERT INTO items (id, item_key, mode, payload, gold_answer, batch)
          VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (knock_key) DO NOTHING",
+         ON CONFLICT (item_key) DO NOTHING",
     )
     .bind(Uuid::new_v4())
-    .bind(item.knock_key())
+    .bind(item.item_key())
     .bind(item.mode())
     .bind(payload)
     .bind(item.gold_answer())
@@ -91,7 +91,7 @@ pub async fn insert_item(
     Ok(result.rows_affected() == 1)
 }
 
-/// Candidate knock_keys for a new daily set.
+/// Candidate item_keys for a new daily set.
 #[derive(Debug, Default)]
 pub struct DailyPools {
     /// Never in a daily set, no gold answer.
@@ -101,8 +101,8 @@ pub struct DailyPools {
     pub carry_over: Vec<String>,
 }
 
-fn knock_keys(rows: &[sqlx::postgres::PgRow]) -> Result<Vec<String>, Error> {
-    rows.iter().map(|row| row.try_get("knock_key")).collect()
+fn item_keys(rows: &[sqlx::postgres::PgRow]) -> Result<Vec<String>, Error> {
+    rows.iter().map(|row| row.try_get("item_key")).collect()
 }
 
 /// SQL true when item `i` comes from a batch a person has approved. A macro
@@ -140,17 +140,17 @@ pub async fn daily_pools_retiring(
     gold_showings: i64,
 ) -> Result<DailyPools, Error> {
     let new = sqlx::query(concat!(
-        "SELECT knock_key FROM items i
+        "SELECT item_key FROM items i
          WHERE gold_answer IS NULL AND ",
         approved!(),
         "
            AND NOT EXISTS (SELECT 1 FROM daily_sets d WHERE i.id = ANY (d.item_ids))
-         ORDER BY knock_key"
+         ORDER BY item_key"
     ))
     .fetch_all(pool)
     .await?;
     let gold = sqlx::query(concat!(
-        "SELECT knock_key FROM items i,
+        "SELECT item_key FROM items i,
            LATERAL (SELECT count(*) AS shown, min(d.day) AS first, max(d.day) AS last
                     FROM daily_sets d WHERE i.id = ANY (d.item_ids) AND d.day <= $1) s
          WHERE gold_answer IS NOT NULL AND ",
@@ -159,46 +159,46 @@ pub async fn daily_pools_retiring(
            AND (s.shown = 0
                 -- A run of showings with no gap, up to and including $1.
                 OR (s.shown < $2 AND s.last = $1 AND s.first = $1 - (s.shown::int - 1)))
-         ORDER BY knock_key"
+         ORDER BY item_key"
     ))
     .bind(before)
     .bind(gold_showings)
     .fetch_all(pool)
     .await?;
     let carry_over = sqlx::query(concat!(
-        "SELECT i.knock_key FROM daily_sets d
+        "SELECT i.item_key FROM daily_sets d
          JOIN items i ON i.id = ANY (d.item_ids)
          LEFT JOIN consensus c ON c.item_id = i.id
          WHERE d.day = $1 AND i.gold_answer IS NULL AND ",
         approved!(),
         "
            AND coalesce(c.status, 'open') <> 'settled'
-         ORDER BY coalesce(c.share, 0), i.knock_key"
+         ORDER BY coalesce(c.share, 0), i.item_key"
     ))
     .bind(before)
     .fetch_all(pool)
     .await?;
     Ok(DailyPools {
-        new: knock_keys(&new)?,
-        gold: knock_keys(&gold)?,
-        carry_over: knock_keys(&carry_over)?,
+        new: item_keys(&new)?,
+        gold: item_keys(&gold)?,
+        carry_over: item_keys(&carry_over)?,
     })
 }
 
 /// Publishes the set for `day`, replacing any earlier one for that day.
 /// Items from batches that aren't approved are left out.
-pub async fn set_daily(pool: &PgPool, day: NaiveDate, knock_keys: &[String]) -> Result<(), Error> {
+pub async fn set_daily(pool: &PgPool, day: NaiveDate, item_keys: &[String]) -> Result<(), Error> {
     sqlx::query(concat!(
         "INSERT INTO daily_sets (day, item_ids)
          SELECT $1, coalesce(array_agg(i.id ORDER BY k.ord), '{}')
          FROM unnest($2::text[]) WITH ORDINALITY AS k(key, ord)
-         JOIN items i ON i.knock_key = k.key AND ",
+         JOIN items i ON i.item_key = k.key AND ",
         approved!(),
         "
          ON CONFLICT (day) DO UPDATE SET item_ids = excluded.item_ids, published_at = now()"
     ))
     .bind(day)
-    .bind(knock_keys)
+    .bind(item_keys)
     .execute(pool)
     .await?;
     Ok(())
@@ -214,7 +214,7 @@ pub async fn daily_set(pool: &PgPool, day: NaiveDate) -> Result<Option<Vec<Store
         return Ok(None);
     }
     let rows = sqlx::query(
-        "SELECT i.id, i.knock_key, i.payload
+        "SELECT i.id, i.item_key, i.payload
          FROM daily_sets d, unnest(d.item_ids) WITH ORDINALITY AS k(id, ord)
          JOIN items i ON i.id = k.id
          WHERE d.day = $1
@@ -359,10 +359,10 @@ pub async fn batch_status(pool: &PgPool, batch: &str) -> Result<Option<String>, 
         .await
 }
 
-/// Every item in a batch, in knock_key order, for a person to skim.
+/// Every item in a batch, in item_key order, for a person to skim.
 pub async fn batch_items(pool: &PgPool, batch: &str) -> Result<Vec<StoredItem>, Error> {
     let rows =
-        sqlx::query("SELECT id, knock_key, payload FROM items WHERE batch = $1 ORDER BY knock_key")
+        sqlx::query("SELECT id, item_key, payload FROM items WHERE batch = $1 ORDER BY item_key")
             .bind(batch)
             .fetch_all(pool)
             .await?;
@@ -584,7 +584,7 @@ pub async fn overtime_next(
     today: NaiveDate,
 ) -> Result<Option<StoredItem>, Error> {
     let row = sqlx::query(concat!(
-        "SELECT i.id, i.knock_key, i.payload FROM items i
+        "SELECT i.id, i.item_key, i.payload FROM items i
          LEFT JOIN consensus c ON c.item_id = i.id
          WHERE ",
         overtime!(),
@@ -607,7 +607,7 @@ pub async fn overtime_item(
     item_id: Uuid,
 ) -> Result<Option<StoredItem>, Error> {
     let row = sqlx::query(concat!(
-        "SELECT i.id, i.knock_key, i.payload FROM items i WHERE i.id = $3 AND ",
+        "SELECT i.id, i.item_key, i.payload FROM items i WHERE i.id = $3 AND ",
         overtime!()
     ))
     .bind(player_id)
@@ -620,7 +620,7 @@ pub async fn overtime_item(
 
 /// An item by id, whatever day it was shown.
 pub async fn item(pool: &PgPool, item_id: Uuid) -> Result<Option<StoredItem>, Error> {
-    let row = sqlx::query("SELECT id, knock_key, payload FROM items WHERE id = $1")
+    let row = sqlx::query("SELECT id, item_key, payload FROM items WHERE id = $1")
         .bind(item_id)
         .fetch_optional(pool)
         .await?;
@@ -712,6 +712,45 @@ pub async fn weekly_standings(
         .collect()
 }
 
+/// The cached leaderboard page for the week starting `week_of`, if it was
+/// rendered at or after `fresh_after`.
+pub async fn cached_leaderboard(
+    pool: &PgPool,
+    week_of: NaiveDate,
+    fresh_after: DateTime<Utc>,
+) -> Result<Option<String>, Error> {
+    sqlx::query_scalar(
+        "SELECT body FROM leaderboard_cache WHERE week_of = $1 AND computed_at >= $2",
+    )
+    .bind(week_of)
+    .bind(fresh_after)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Stores a freshly rendered leaderboard page, and drops other weeks' pages.
+pub async fn cache_leaderboard(
+    pool: &PgPool,
+    week_of: NaiveDate,
+    computed_at: DateTime<Utc>,
+    body: &str,
+) -> Result<(), Error> {
+    sqlx::query("DELETE FROM leaderboard_cache WHERE week_of <> $1")
+        .bind(week_of)
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO leaderboard_cache (week_of, computed_at, body) VALUES ($1, $2, $3)
+         ON CONFLICT (week_of) DO UPDATE SET computed_at = excluded.computed_at, body = excluded.body",
+    )
+    .bind(week_of)
+    .bind(computed_at)
+    .bind(body)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// (handle, days played, settled answers, matching answers) for every player
 /// with a handle: what the board needs to put each one in a rank tier.
 pub async fn handle_records(pool: &PgPool) -> Result<Vec<(String, i64, i64, i64)>, Error> {
@@ -741,6 +780,17 @@ pub async fn handle_records(pool: &PgPool) -> Result<Vec<(String, i64, i64, i64)
             ))
         })
         .collect()
+}
+
+/// Takes a handle away from whoever has it, in any case, for a reported or
+/// offensive name. Returns false if nobody had it. The player keeps
+/// playing; they just drop off the leaderboard until they pick another.
+pub async fn clear_handle(pool: &PgPool, handle: &str) -> Result<bool, Error> {
+    let result = sqlx::query("UPDATE players SET handle = NULL WHERE lower(handle) = lower($1)")
+        .bind(handle)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() == 1)
 }
 
 pub async fn handle(pool: &PgPool, player_id: Uuid) -> Result<Option<String>, Error> {
