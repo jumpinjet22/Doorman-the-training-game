@@ -3,8 +3,11 @@ plan (M3): settled items are right at least 95% of the time, and trolls end
 up with trust of 0.05 or less. A scorer change that breaks either fails CI.
 """
 
+from datetime import timedelta
+
 import pytest
 
+from dorman_scorer.config import SOFT_LAUNCH, Config
 from dorman_scorer.scoring import score
 from tests.sim import Crowd, simulate
 
@@ -67,6 +70,21 @@ def test_honest_newcomers_are_not_mistaken_for_a_brigade() -> None:
     world, _, verdicts, settled, accuracy = _run(Crowd(honest=20, newcomers=30))
     assert all(v.zeroed_votes == 0 for v in verdicts)
     assert len(settled) == len(verdicts) and accuracy == 1.0
+
+
+def test_a_launch_day_crowd_settles_under_soft_launch_only() -> None:
+    # Launch day: every account is hours old, so every vote is a new-account vote.
+    world = simulate(Crowd(honest=0, newcomers=25, days=1))
+
+    _, held = score(world.items, world.votes, world.today, Config())
+    assert {(v.status, v.zeroed_votes) for v in held} == {("open", 25)}
+    later = world.today + timedelta(days=3)
+    _, still_held = score(world.items, world.votes, later, Config())
+    assert {v.status for v in still_held} == {"disputed"}
+
+    _, verdicts = score(world.items, world.votes, world.today, SOFT_LAUNCH)
+    assert all(v.status == "settled" and v.zeroed_votes == 0 for v in verdicts)
+    assert all(v.label == world.truth[v.item_id] for v in verdicts)
 
 
 # The M3 grid: 10-40% trolls, 0-3 brigades, 20-500 players.

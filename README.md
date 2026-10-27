@@ -116,7 +116,7 @@ fail CI the moment they start passing, so the marker gets removed with the fix.
   the reveal page.
 
 Every threshold is configurable: `--profile soft-launch` (weight 2.0, share
-0.7), `DORMAN_MIN_WEIGHT`-style environment variables, or flags; see
+0.7, brigade detection off, since on launch day every account is new), `DORMAN_MIN_WEIGHT`-style environment variables, or flags; see
 `python -m dorman_scorer --help`. 5.0 weight is about 8 regulars with 20 gold
 answers each, so use the soft-launch profile until real traffic exists.
 
