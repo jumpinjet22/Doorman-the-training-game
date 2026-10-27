@@ -13,7 +13,7 @@ dorman-db = { path = "crates/db" }
 dorman-testkit = { path = "crates/testkit" }
 anyhow = "1"
 axum = "0.8"
-axum-extra = { version = "0.10", features = ["cookie-signed"] }
+axum-extra = { version = "0.12", features = ["cookie-signed"] }
 askama = "0.12"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4", features = ["derive", "env"] }
