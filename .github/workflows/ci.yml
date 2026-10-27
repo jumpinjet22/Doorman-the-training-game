@@ -1,8 +1,17 @@
 name: CI
 
+# Pushes to main, plus every PR. A PR branch's own pushes are covered by the
+# pull_request run, so they don't need a second run of their own.
 on:
   push:
+    branches: [main]
   pull_request:
+
+# A newer push to the same PR makes the older run pointless; cancel it. Runs
+# on main always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Nothing here writes to the repo, an issue or a PR.
 permissions:
@@ -91,10 +100,14 @@ jobs:
           --health-retries 20
     steps:
       - uses: actions/checkout@v7
-      # The contract test runs KNOCK's real export/import scripts.
+      # The contract test runs KNOCK's real export/import scripts. Pinned to a
+      # commit so a push to KNOCK can't change or break this repo's CI (its
+      # install runs here too). Dependabot can't bump this: to take a newer
+      # KNOCK, set `ref` to its main commit's SHA in a PR and let CI prove it.
       - uses: actions/checkout@v7
         with:
           repository: jumpinjet22/KNOCK
+          ref: 55b21c4579d198c584984b4be66b2f679826ad90 # main, 2026-10-27
           path: knock
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
