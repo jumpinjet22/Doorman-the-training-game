@@ -252,7 +252,6 @@ def dorman(
                 "DATABASE_URL": db_url,
                 "DORMAN_BIND": f"127.0.0.1:{port}",
                 "DORMAN_COOKIE_SECRET": "5c0e9a1f7b3d28e64a90c1f7d2b8e53a",
-                "DORMAN_SECURE_COOKIES": "false",
                 "DORMAN_TEST_CLOCK_FILE": str(clock_file),
                 "DORMAN_LAUNCH_DATE": DAY,
                 "DORMAN_PUBLIC_ORIGIN": f"http://127.0.0.1:{port}",

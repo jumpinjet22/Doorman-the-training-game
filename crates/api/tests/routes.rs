@@ -68,7 +68,6 @@ impl Harness {
         let state = AppState {
             pool: pool.clone(),
             key: cookie_key(SECRET),
-            secure_cookies: true,
             clock: clock.clone(),
             turnstile: setup.verifier.unwrap_or_else(|| turnstile.clone()),
             turnstile_site_key: SITE_KEY.into(),

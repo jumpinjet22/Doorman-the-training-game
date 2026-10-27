@@ -136,7 +136,8 @@ async fn ensure_player(
     let cookie = Cookie::build((PLAYER_COOKIE, id.to_string()))
         .path("/")
         .http_only(true)
-        .secure(state.secure_cookies)
+        // Always: browsers keep Secure cookies on http://localhost too.
+        .secure(true)
         .same_site(SameSite::Lax)
         .permanent()
         .build();

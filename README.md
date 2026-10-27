@@ -46,9 +46,9 @@ cargo run -p dorman-ingest -- approve example-1    # ...then let it into daily s
 cargo run -p dorman-ingest -- daily --day "$(date -u +%F)"
 
 # Cloudflare's always-pass Turnstile test keys; never use them in production.
-# The server refuses them (and DORMAN_SECURE_COOKIES=false) unless the public
-# origin is localhost, 127.0.0.1 or [::1].
-DORMAN_COOKIE_SECRET=$(openssl rand -hex 32) DORMAN_SECURE_COOKIES=false \
+# The server refuses them unless the public origin is http:// on localhost,
+# 127.0.0.1 or [::1].
+DORMAN_COOKIE_SECRET=$(openssl rand -hex 32) \
 DORMAN_LAUNCH_DATE="$(date -u +%F)" \
 DORMAN_TURNSTILE_SITE_KEY=1x00000000000000000000AA \
 DORMAN_TURNSTILE_SECRET=1x0000000000000000000000000000000AA \
@@ -72,12 +72,11 @@ ignores it.
 |---|---|---|
 | `DORMAN_COOKIE_SECRET` or `DORMAN_COOKIE_SECRET_FILE` | one required | 32+ random bytes (`openssl rand -hex 32`); signs the player cookie and salts network hashes. Short or repetitive values are refused. Prefer the file form (e.g. a mounted secret); there is deliberately no documented CLI flag, since flags show in the process list |
 | `DORMAN_LAUNCH_DATE` | required | day 1 of the game (`YYYY-MM-DD`); day numbers on the page and share card count from it |
-| `DORMAN_TURNSTILE_SITE_KEY`, `DORMAN_TURNSTILE_SECRET` | required | Cloudflare Turnstile. If Cloudflare can't be reached, votes are refused. A token passes only if Cloudflare says it was solved on the host of `DORMAN_PUBLIC_ORIGIN` for the `vote` action. Cloudflare's test keys are refused unless the origin is local and `DORMAN_SECURE_COOKIES=false` |
+| `DORMAN_TURNSTILE_SITE_KEY`, `DORMAN_TURNSTILE_SECRET` | required | Cloudflare Turnstile. If Cloudflare can't be reached, votes are refused. A token passes only if Cloudflare says it was solved on the host of `DORMAN_PUBLIC_ORIGIN` for the `vote` action. Cloudflare's test keys are refused unless the origin is `http://` on localhost, 127.0.0.1 or [::1] |
 | `DORMAN_PUBLIC_ORIGIN` | `http://<bind>` | e.g. `https://example.com`; POSTs from any other `Origin` get 403. HSTS is sent only when this is https |
 | `DORMAN_CLIENT_IP_HEADER` | unset (TCP peer) | e.g. `Fly-Client-IP`; set only behind a proxy that overwrites it |
 | `DORMAN_VOTES_PER_MINUTE` | 30 | per player |
 | `DORMAN_NEW_PLAYERS_PER_HOUR` | 20 | per /24 (IPv4) or /48 (IPv6), stored as a salted hash for 24 hours |
-| `DORMAN_SECURE_COOKIES` | true | `false` is allowed only for an `http://` localhost, 127.0.0.1 or [::1] origin |
 
 Behind a proxy or load balancer, set `DORMAN_CLIENT_IP_HEADER`: without it,
 every client shares the proxy's address, so the whole site gets one network's

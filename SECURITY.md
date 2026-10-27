@@ -62,7 +62,7 @@ Out of scope:
   Postgres)
 - attacks that already need access to the host, the database or the secrets
 - deliberately insecure configuration, such as running with Cloudflare's
-  Turnstile test keys or `DORMAN_SECURE_COOKIES=false` in production, or
-  trusting `DORMAN_CLIENT_IP_HEADER` without a proxy that overwrites it
+  Turnstile test keys in production, or trusting `DORMAN_CLIENT_IP_HEADER`
+  without a proxy that overwrites it
 - volumetric denial of service that needs only raw traffic (put a CDN in front)
 - findings that only apply to the synthetic example data in `fixtures/`

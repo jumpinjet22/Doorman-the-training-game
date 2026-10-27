@@ -30,9 +30,6 @@ struct Args {
     /// A file holding the cookie secret (e.g. a mounted secret).
     #[arg(long, env = "DORMAN_COOKIE_SECRET_FILE")]
     cookie_secret_file: Option<std::path::PathBuf>,
-    /// Mark cookies Secure (HTTPS only). Turn off only for local http dev.
-    #[arg(long, env = "DORMAN_SECURE_COOKIES", default_value_t = true, action = clap::ArgAction::Set)]
-    secure_cookies: bool,
     /// Where players reach the site, e.g. https://example.com. POSTs from
     /// any other origin are refused. Default: http://<bind>.
     #[arg(long, env = "DORMAN_PUBLIC_ORIGIN")]
@@ -108,13 +105,8 @@ async fn main() -> anyhow::Result<()> {
         .public_origin
         .unwrap_or_else(|| format!("http://{}", args.bind));
     let origin = config::public_origin(&public_origin)?;
-    config::check_secure_cookies(&origin, args.secure_cookies)?;
-    let test_keys = config::check_turnstile_keys(
-        &args.turnstile_site_key,
-        &args.turnstile_secret,
-        &origin,
-        args.secure_cookies,
-    )?;
+    let test_keys =
+        config::check_turnstile_keys(&args.turnstile_site_key, &args.turnstile_secret, &origin)?;
     if test_keys {
         tracing::warn!("using Cloudflare Turnstile test keys; fine locally, never in production");
     }
@@ -128,7 +120,6 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         pool,
         key: cookie_key(&cookie_secret),
-        secure_cookies: args.secure_cookies,
         clock: clock(),
         turnstile: turnstile(args.turnstile_secret, token_host),
         turnstile_site_key: args.turnstile_site_key,

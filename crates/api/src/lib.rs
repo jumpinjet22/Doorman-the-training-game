@@ -40,7 +40,6 @@ pub const MAX_BODY_BYTES: usize = 8 * 1024;
 pub struct AppState {
     pub pool: PgPool,
     pub key: Key,
-    pub secure_cookies: bool,
     pub clock: Arc<dyn Clock>,
     pub turnstile: Arc<dyn TurnstileVerifier>,
     /// Public, rendered into the page for the Turnstile widget.

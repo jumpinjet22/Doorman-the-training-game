@@ -51,33 +51,17 @@ pub fn is_local(origin: &Url) -> bool {
     matches!(origin.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
 }
 
-/// `DORMAN_SECURE_COOKIES=false` is for plain-http development on this
-/// machine. Anywhere else it would send the player cookie in the clear.
-pub fn check_secure_cookies(origin: &Url, secure_cookies: bool) -> anyhow::Result<()> {
-    ensure!(
-        secure_cookies || (origin.scheme() == "http" && is_local(origin)),
-        "DORMAN_SECURE_COOKIES=false is only allowed for http://localhost, \
-         http://127.0.0.1 or http://[::1]"
-    );
-    Ok(())
-}
-
 /// Cloudflare's test keys pass (or fail) every token, so they mean there is
-/// no human check at all. Refused for anything but local development, which
-/// is a non-local origin or secure cookies. Returns whether test keys are
-/// in use, for the caller to warn about.
-pub fn check_turnstile_keys(
-    site_key: &str,
-    secret: &str,
-    origin: &Url,
-    secure_cookies: bool,
-) -> anyhow::Result<bool> {
+/// no human check at all. Refused for anything but local development: a
+/// plain-http origin on this machine. Returns whether test keys are in use,
+/// for the caller to warn about.
+pub fn check_turnstile_keys(site_key: &str, secret: &str, origin: &Url) -> anyhow::Result<bool> {
     let test = TEST_SECRETS.contains(&secret) || TEST_SITE_KEYS.contains(&site_key);
-    if test && (!is_local(origin) || secure_cookies) {
+    if test && !(origin.scheme() == "http" && is_local(origin)) {
         bail!(
             "Cloudflare Turnstile test keys accept every visitor; they are only \
-             allowed with a localhost DORMAN_PUBLIC_ORIGIN and \
-             DORMAN_SECURE_COOKIES=false"
+             allowed with an http://localhost, http://127.0.0.1 or http://[::1] \
+             DORMAN_PUBLIC_ORIGIN"
         );
     }
     Ok(test)
@@ -170,51 +154,37 @@ mod tests {
     }
 
     #[test]
-    fn insecure_cookies_only_on_local_http() {
-        assert!(check_secure_cookies(&origin(LOCAL), false).is_ok());
-        assert!(check_secure_cookies(&origin("http://localhost"), false).is_ok());
-        for remote in [PROD, "http://example.com", "https://localhost"] {
-            assert!(
-                check_secure_cookies(&origin(remote), false).is_err(),
-                "{remote}"
-            );
-            assert!(
-                check_secure_cookies(&origin(remote), true).is_ok(),
-                "{remote}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_keys_only_for_local_insecure_development() {
+    fn test_keys_only_for_local_http_development() {
         let real = ("0x4AAAAAAAreal-site-key", "0x4AAAAAAAreal-secret");
-        // Locally, with dev cookies: allowed, and reported.
-        assert!(check_turnstile_keys(PASS_KEY, PASS_SECRET, &origin(LOCAL), false).unwrap());
-        assert!(check_turnstile_keys(PASS_KEY, real.1, &origin(LOCAL), false).unwrap());
-        assert!(check_turnstile_keys(real.0, PASS_SECRET, &origin(LOCAL), false).unwrap());
-        // A test secret or a test site key on a real origin, or with secure
-        // cookies (a production setting), is refused.
+        // Locally, over http: allowed, and reported.
+        for local in [LOCAL, "http://localhost", "http://[::1]:3000"] {
+            assert!(check_turnstile_keys(PASS_KEY, PASS_SECRET, &origin(local)).unwrap());
+        }
+        assert!(check_turnstile_keys(PASS_KEY, real.1, &origin(LOCAL)).unwrap());
+        assert!(check_turnstile_keys(real.0, PASS_SECRET, &origin(LOCAL)).unwrap());
+        // A test secret or a test site key on a real origin, or over https
+        // (a production setting), is refused.
         for (key, secret) in [
             (PASS_KEY, PASS_SECRET),
             (PASS_KEY, real.1),
             (real.0, PASS_SECRET),
         ] {
-            for (url, secure) in [(PROD, true), (PROD, false), (LOCAL, true)] {
+            for url in [PROD, "http://example.com", "https://localhost"] {
                 assert!(
-                    check_turnstile_keys(key, secret, &origin(url), secure).is_err(),
-                    "{key} {secret} {url} {secure}"
+                    check_turnstile_keys(key, secret, &origin(url)).is_err(),
+                    "{key} {secret} {url}"
                 );
             }
         }
         for secret in TEST_SECRETS {
-            assert!(check_turnstile_keys(real.0, secret, &origin(PROD), true).is_err());
+            assert!(check_turnstile_keys(real.0, secret, &origin(PROD)).is_err());
         }
         for key in TEST_SITE_KEYS {
-            assert!(check_turnstile_keys(key, real.1, &origin(PROD), true).is_err());
+            assert!(check_turnstile_keys(key, real.1, &origin(PROD)).is_err());
         }
         // Real keys are fine anywhere.
-        assert!(!check_turnstile_keys(real.0, real.1, &origin(PROD), true).unwrap());
-        assert!(!check_turnstile_keys(real.0, real.1, &origin(LOCAL), false).unwrap());
+        assert!(!check_turnstile_keys(real.0, real.1, &origin(PROD)).unwrap());
+        assert!(!check_turnstile_keys(real.0, real.1, &origin(LOCAL)).unwrap());
     }
 
     #[test]
