@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block title %}Yesterday · Who's At The Door?{% endblock %}
+{% block main %}
+<h1>Yesterday's game</h1>
+{% call m::masthead(masthead) %}
+{% if !played_day %}
+<p>There was no game yesterday.</p>
+{% else if !out %}
+<p>Results come out the morning after each game, once everyone's votes are counted. Check back soon.</p>
+{% else %}
+{% if let Some(card) = card %}
+<section class="share" aria-labelledby="card-heading">
+  <h2 id="card-heading">Your card</h2>
+  <pre id="share-card">{{ card }}</pre>
+</section>
+{% endif %}
+<h2>How the crowd answered</h2>
+<p class="hint">Bars are weighted: players with a track record of good answers count for more.</p>
+<ol class="results">
+  {% for row in rows %}
+  <li class="result">
+    <p class="prompt">{{ row.item.prompt }}</p>
+    {% call m::scene(row.item) %}
+    <p class="verdict">{{ row.verdict }}</p>
+    {% call m::bars(row.bars) %}
+  </li>
+  {% endfor %}
+</ol>
+{% endif %}
+{% endblock %}

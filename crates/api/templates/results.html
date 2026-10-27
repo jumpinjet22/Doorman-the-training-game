@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block main %}
+<h1>Today's results</h1>
+{% call m::masthead(masthead) %}
+<section class="share" aria-labelledby="card-heading">
+  <h2 id="card-heading">Your card</h2>
+  <pre id="share-card">{{ card }}</pre>
+  {% if pending %}<p class="hint">Grey squares fill in tomorrow morning, once everyone's votes are counted.</p>{% endif %}
+  <p class="actions">
+    <button id="copy" type="button" hidden>Copy</button>
+    <button id="share" type="button" hidden>Share</button>
+    <span id="copied" role="status"></span>
+  </p>
+</section>
+<h2>Your answers</h2>
+<ol class="results">
+  {% for row in rows %}
+  <li class="result">
+    <p class="prompt">{{ row.item.prompt }}</p>
+    {% call m::scene(row.item) %}
+    <p>You said: <strong>{{ row.mine }}</strong></p>
+    {% call m::bars(row.bars) %}
+  </li>
+  {% endfor %}
+</ol>
+<p><a href="/yesterday">See how yesterday's game turned out</a></p>
+{% endblock %}

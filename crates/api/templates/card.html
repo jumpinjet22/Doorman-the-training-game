@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% import "macros.html" as m %}
+{% block main %}
+<h1>Today's game</h1>
+{% call m::masthead(masthead) %}
+<progress class="progress" value="{{ position }}" max="{{ total }}" aria-label="Card {{ position }} of {{ total }}"></progress>
+<p class="count">Card {{ position }} of {{ total }}</p>
+<section class="card" data-item="{{ item.id }}" aria-labelledby="prompt">
+  <h2 class="prompt" id="prompt">{{ item.prompt }}</h2>
+  {% call m::scene(item) %}
+  {% match split %}
+  {% when Some with (list) %}
+  <ul class="choices">
+    {% for choice in item.choices %}
+    <li><button type="button" disabled{% if item.answered.as_deref() == Some(choice.value.as_str()) %} class="mine"{% endif %}>{{ choice.label }}</button></li>
+    {% endfor %}
+  </ul>
+  <div class="split" aria-live="polite">{% call m::bars(list) %}</div>
+  {% when None %}
+  <form class="vote" method="post" action="/vote">
+    <input type="hidden" name="item_id" value="{{ item.id }}">
+    <input type="hidden" name="shown_at" value="{{ shown_at }}">
+    <ul class="choices">
+      {% for choice in item.choices %}
+      <li><button type="submit" name="answer" value="{{ choice.value }}">{{ choice.label }}</button></li>
+      {% endfor %}
+    </ul>
+    <div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" data-action="vote" data-appearance="interaction-only"></div>
+  </form>
+  <div class="split" aria-live="polite"></div>
+  {% endmatch %}
+  <a class="next" href="/"{% if split.is_none() %} hidden{% endif %}>{% if last %}See your results{% else %}Next card{% endif %}</a>
+</section>
+{% endblock %}
+{% block scripts %}
+{% if split.is_none() %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}
+{% endblock %}

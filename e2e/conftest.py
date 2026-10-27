@@ -43,26 +43,28 @@ EXAMPLE_BATCH = json.loads(FIXTURE_BATCH.read_text(encoding="utf-8"))["batch"]
 TURNSTILE_SITE_KEY = "1x00000000000000000000AA"
 TURNSTILE_SECRET = "1x0000000000000000000000000000000AA"
 TURNSTILE_SCRIPT = "https://challenges.cloudflare.com/turnstile/v0/api.js*"
-# Stands in for Cloudflare's script: the same API, and every execute() hands
-# the page a fresh token at once.
+# Stands in for Cloudflare's script, rendering implicitly as the real one
+# does: each `.cf-turnstile` box gets a hidden `cf-turnstile-response` input
+# (so it goes with its form) holding a fresh token, and reset() swaps it for
+# a new one.
 FAKE_TURNSTILE_JS = """
 (() => {
-  const widgets = new Map();
-  window.turnstile = {
-    render(el, options) {
-      const id = String(widgets.size + 1);
-      widgets.set(id, options);
-      el.dataset.fakeTurnstile = id;
-      return id;
-    },
-    execute(el) {
-      const options = widgets.get(el.dataset.fakeTurnstile);
-      setTimeout(() => options.callback(`e2e-pass-${crypto.randomUUID()}`), 10);
-    },
-    reset() {},
-    remove() {},
-    getResponse() {},
+  const issue = (box) => {
+    let input = box.querySelector('input[name="cf-turnstile-response"]');
+    if (!input) {
+      input = Object.assign(document.createElement("input"), {
+        type: "hidden",
+        name: "cf-turnstile-response",
+      });
+      box.append(input);
+    }
+    input.value = "";
+    setTimeout(() => { input.value = `e2e-pass-${crypto.randomUUID()}`; }, 20);
   };
+  const all = () => document.querySelectorAll(".cf-turnstile").forEach(issue);
+  window.turnstile = { reset: all, render() {}, execute() {}, remove() {}, getResponse() {} };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", all);
+  else all();
 })();
 """
 
@@ -239,6 +241,7 @@ def dorman(
                 "DORMAN_COOKIE_SECRET": "e2e-secret-e2e-secret-e2e-secret!",
                 "DORMAN_SECURE_COOKIES": "false",
                 "DORMAN_TEST_CLOCK_FILE": str(clock_file),
+                "DORMAN_LAUNCH_DATE": DAY,
                 "DORMAN_PUBLIC_ORIGIN": f"http://127.0.0.1:{port}",
                 "DORMAN_TURNSTILE_SITE_KEY": TURNSTILE_SITE_KEY,
                 "DORMAN_TURNSTILE_SECRET": TURNSTILE_SECRET,
