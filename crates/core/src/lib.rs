@@ -8,6 +8,7 @@ pub mod daily;
 pub mod handles;
 pub mod limits;
 pub mod ranks;
+pub mod served;
 pub mod share;
 pub mod turnstile;
 

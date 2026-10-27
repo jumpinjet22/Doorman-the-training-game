@@ -24,6 +24,7 @@ use crate::views::{
     LeaderboardPage, Masthead, MessagePage, Progress, PublicItem, ResultRow, ResultsPage,
     RevealRow, SureRow, Tier, YesterdayPage,
 };
+use crate::voting::serve_token;
 use crate::{known_player, AppError, AppState};
 
 fn masthead(state: &AppState, day: NaiveDate) -> Masthead {
@@ -105,6 +106,7 @@ pub async fn play(
             day,
             &items,
             index,
+            player,
             Some(mine),
             Some(split),
             remaining == 0,
@@ -114,16 +116,27 @@ pub async fn play(
         .iter()
         .position(|item| !answers.contains_key(&item.id))
     {
-        Some(index) => card(&state, day, &items, index, None, None, remaining == 1),
+        Some(index) => card(
+            &state,
+            day,
+            &items,
+            index,
+            player,
+            None,
+            None,
+            remaining == 1,
+        ),
         None => results_page(&state, day, &items, &answers, player).await,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn card(
     state: &AppState,
     day: NaiveDate,
     items: &[StoredItem],
     index: usize,
+    player: Option<Uuid>,
     answered: Option<String>,
     split: Option<Vec<Bar>>,
     last: bool,
@@ -133,7 +146,7 @@ fn card(
         position: index + 1,
         total: items.len(),
         item: PublicItem::from_stored(&items[index], answered),
-        shown_at: state.clock.now().timestamp_millis(),
+        served: serve_token(state, items[index].id, player),
         turnstile_site_key: state.turnstile_site_key.clone(),
         split,
         last,
@@ -292,11 +305,13 @@ fn verdict_words(verdict: &Verdict, label: &dyn Fn(&str) -> String) -> String {
 
 /// `GET /yesterday`: yesterday's items once the night's scoring has run,
 /// every one shown the same way whether or not its answer was known in
-/// advance, so the page can't be used to pick those out. An item that's back
-/// in today's set is left out (its split would tip off today's answers), and
-/// how the crowd answered is shown only for items the viewer answered
-/// themselves: they'll never be asked those again, so the page can't teach
-/// anyone answers to use later.
+/// advance, so the page can't be used to pick those out. An item that's
+/// still in play (back in today's set, or already in tomorrow's) is left
+/// out: its split would tip off answers that can still be given. Gold only
+/// ever runs on consecutive days (`dorman_db::daily_pools`), so a gold item
+/// that isn't back has retired and nothing here can be reused on it. How
+/// the crowd answered, and why, is shown only for items the viewer answered
+/// themselves: they'll never be asked those again.
 pub async fn yesterday(
     State(state): State<AppState>,
     jar: SignedCookieJar,
@@ -316,18 +331,13 @@ pub async fn yesterday(
     if page.played_day && page.out {
         let player = known_player(&state, &jar).await?;
         let answers = answers(&state, player, &items).await?;
-        let back_today: Vec<Uuid> = dorman_db::daily_set(&state.pool, today)
-            .await?
-            .unwrap_or_default()
-            .iter()
-            .map(|item| item.id)
-            .collect();
+        let ids: Vec<Uuid> = items.iter().map(|item| item.id).collect();
+        let back_today = dorman_db::in_play(&state.pool, &ids, today).await?;
         if !answers.is_empty() {
             let outcomes = outcomes(&state, day, &items, &answers, &back_today).await?;
             let number = day_number(state.launch_date, day).unwrap_or(0);
             page.card = Some(share_card(number, &outcomes, 0));
         }
-        let ids: Vec<Uuid> = items.iter().map(|item| item.id).collect();
         let verdicts = dorman_db::verdicts(&state.pool, &ids).await?;
         for item in items.iter().filter(|item| !back_today.contains(&item.id)) {
             let Some(mine) = answers.get(&item.id).cloned() else {
@@ -340,7 +350,8 @@ pub async fn yesterday(
                 });
                 continue;
             };
-            let public = PublicItem::from_stored(item, Some(mine.clone()));
+            let mut public = PublicItem::from_stored(item, Some(mine.clone()));
+            public.explanation = item.item.explanation().map(str::to_string);
             // Only labels for choices the item actually offered: never a
             // raw key, whatever the scorer wrote.
             let labels: HashMap<String, String> = public
@@ -449,6 +460,7 @@ pub async fn overtime(
             return overtime_card(
                 &state,
                 masthead,
+                player,
                 &item,
                 Some(mine.clone()),
                 Some(split),
@@ -457,7 +469,7 @@ pub async fn overtime(
         }
     }
     match dorman_db::overtime_next(&state.pool, player, today).await? {
-        Some(item) => overtime_card(&state, masthead, &item, None, None, answered),
+        Some(item) => overtime_card(&state, masthead, player, &item, None, None, answered),
         None => {
             let page = MessagePage {
                 heading: "Overtime",
@@ -472,6 +484,7 @@ pub async fn overtime(
 fn overtime_card(
     state: &AppState,
     masthead: Masthead,
+    player: Uuid,
     item: &StoredItem,
     answered: Option<String>,
     split: Option<Vec<Bar>>,
@@ -482,7 +495,7 @@ fn overtime_card(
         position: 0,
         total: 0,
         item: PublicItem::from_stored(item, answered),
-        shown_at: state.clock.now().timestamp_millis(),
+        served: serve_token(state, item.id, Some(player)),
         turnstile_site_key: state.turnstile_site_key.clone(),
         split,
         last: false,

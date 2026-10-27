@@ -54,7 +54,6 @@
     {% call m::scene(row.item) %}{% endcall %}
     <p>You said: <strong>{{ row.mine }}</strong>{% if let Some(sure) = row.sure %} <span class="you">({{ sure }})</span>{% endif %}</p>
     {% call m::bars(row.bars) %}{% endcall %}
-    {% call m::explanation(row.item) %}{% endcall %}
   </li>
   {% endfor %}
 </ol>

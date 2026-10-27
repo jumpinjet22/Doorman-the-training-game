@@ -1,8 +1,11 @@
 //! Taking a vote, by fetch from `play.js` (`POST /api/vote`, JSON) or as a
 //! plain form post when the script didn't load (`POST /vote`). Both go
 //! through `cast`: the item must be in today's set, the answer one of its
-//! choices, the Turnstile token fresh and passed by Cloudflare, and the
-//! player and their network inside their rate limits.
+//! choices, the player and their network inside their rate limits, and the
+//! Turnstile token fresh and passed by Cloudflare. Limits come before the
+//! token, so a player who's asked to slow down keeps their human check for
+//! the retry. Time to answer is measured by the server, from the signed
+//! token the card was rendered with (`dorman_core::served`).
 
 use askama::Template;
 use axum::extract::{Form, State};
@@ -12,11 +15,13 @@ use axum::Json;
 use axum_extra::extract::cookie::{Cookie, SameSite, SignedCookieJar};
 use chrono::Duration;
 use dorman_core::limits::{network_key, seconds_left, window_start};
+use dorman_core::served;
 use dorman_core::turnstile::plausible_token;
 use dorman_core::{BatchItem, Confidence, Verdict};
 use dorman_db::StoredItem;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
 
 use crate::pages::finished_today;
@@ -31,6 +36,29 @@ const MAX_MS_TO_ANSWER: i32 = 10 * 60 * 1000;
 const TOKEN_MEMORY: Duration = Duration::minutes(10);
 /// Rate-limit rows, including the network hashes, are deleted after this.
 const LIMIT_RETENTION: Duration = Duration::hours(24);
+
+/// New players created with no client address, so in the one shared
+/// `unknown` network bucket. Anything above zero means the proxy header is
+/// missing or wrong, and every newcomer on the site is sharing one limit.
+pub static UNKNOWN_NETWORK_PLAYERS: AtomicU64 = AtomicU64::new(0);
+
+/// The token a card is rendered with, for timing the answer to it.
+pub fn serve_token(state: &AppState, item: Uuid, viewer: Option<Uuid>) -> String {
+    let viewer = viewer.map(|id| id.to_string()).unwrap_or_default();
+    let now = state.clock.now().timestamp_millis();
+    served::sign(state.key.signing(), &item.to_string(), &viewer, now)
+}
+
+/// Milliseconds since `item` was served to `viewer`, by the server's clock.
+/// A missing, forged or mismatched token counts as no time at all, which is
+/// what a script that skipped the card would look like.
+fn server_ms(state: &AppState, token: &str, item: Uuid, viewer: Option<Uuid>) -> i32 {
+    let viewer = viewer.map(|id| id.to_string()).unwrap_or_default();
+    let now = state.clock.now().timestamp_millis();
+    served::served_at(state.key.signing(), token, &item.to_string(), &viewer)
+        .map(|at| now.saturating_sub(at).clamp(0, MAX_MS_TO_ANSWER.into()) as i32)
+        .unwrap_or(0)
+}
 
 /// Why a vote wasn't taken.
 #[derive(Debug)]
@@ -103,36 +131,59 @@ async fn over_limit(
     Ok((hits > limit).then(|| seconds_left(now, window)))
 }
 
-/// The player behind this request, creating an anonymous one if needed and
-/// this network hasn't made too many lately. Only call it once the request
-/// has passed Turnstile.
-async fn ensure_player(
-    state: &AppState,
-    jar: SignedCookieJar,
-    ip: &ClientIp,
-) -> Result<Result<(Uuid, SignedCookieJar), Refusal>, AppError> {
-    if let Some(id) = known_player(state, &jar).await? {
-        return Ok(Ok((id, jar)));
-    }
-    let now = state.clock.now();
-    dorman_db::purge_rate_limits(&state.pool, now - LIMIT_RETENTION).await?;
-    // With no address at all, everyone shares one bucket: that fails closed.
-    let network = match ip.0 {
+/// The network a new player is counted against. With no address at all,
+/// everyone shares one bucket: that fails closed, and it's an error, since
+/// it means the proxy isn't passing the client's address on.
+fn network_of(state: &AppState, ip: &ClientIp) -> Vec<u8> {
+    match ip.0 {
         Some(ip) => network_key(&state.network_salt, ip),
         None => {
-            tracing::warn!("no client address; check DORMAN_CLIENT_IP_HEADER");
+            UNKNOWN_NETWORK_PLAYERS.fetch_add(1, Ordering::Relaxed);
+            tracing::error!(
+                "no client address, so every new player shares one limit; \
+                 check DORMAN_CLIENT_IP_HEADER and the proxy"
+            );
             b"unknown".to_vec()
         }
-    };
-    let limit = state.limits.new_players_per_hour;
-    if let Some(wait) = over_limit(state, "new_player", &network, Duration::hours(1), limit).await?
-    {
-        return Ok(Err(Refusal::too_many(
-            wait,
-            "Too many new players from your network. Try later.",
-        )));
     }
+}
+
+/// Whether this network has already made its quota of new players this
+/// hour. Only players actually created count (see `create_player`), so
+/// requests refused for any reason don't use up a shared network's
+/// allowance. That network is a /24 (or /48), which may be a whole school
+/// or a carrier's NAT: the limit is per network on purpose, to make account
+/// farms expensive, and this keeps one noisy client from using it up.
+async fn network_full(state: &AppState, network: &[u8]) -> Result<Option<Refusal>, AppError> {
+    let now = state.clock.now();
+    let window = Duration::hours(1);
+    let hits = dorman_db::rate_limit_hits(
+        &state.pool,
+        "new_player",
+        network,
+        window_start(now, window),
+    )
+    .await?;
+    Ok((hits >= state.limits.new_players_per_hour).then(|| {
+        Refusal::too_many(
+            seconds_left(now, window),
+            "Too many new players from your network. Try later.",
+        )
+    }))
+}
+
+/// A new anonymous player, counted against their network. Only call it once
+/// the request has passed `network_full` and Turnstile.
+async fn create_player(
+    state: &AppState,
+    jar: SignedCookieJar,
+    network: &[u8],
+) -> Result<(Uuid, SignedCookieJar), AppError> {
+    let now = state.clock.now();
+    dorman_db::purge_rate_limits(&state.pool, now - LIMIT_RETENTION).await?;
     let id = dorman_db::create_player(&state.pool).await?;
+    let window = window_start(now, Duration::hours(1));
+    dorman_db::hit_rate_limit(&state.pool, "new_player", network, window).await?;
     let cookie = Cookie::build((PLAYER_COOKIE, id.to_string()))
         .path("/")
         .http_only(true)
@@ -141,7 +192,7 @@ async fn ensure_player(
         .same_site(SameSite::Lax)
         .permanent()
         .build();
-    Ok(Ok((id, jar.add(cookie))))
+    Ok((id, jar.add(cookie)))
 }
 
 /// Checks a request's Turnstile token: present, never seen before, and
@@ -182,7 +233,8 @@ pub struct Ballot {
     pub overtime: bool,
     pub item_id: Uuid,
     pub answer: String,
-    pub ms_to_answer: i64,
+    /// The token the card was rendered with (`serve_token`).
+    pub served: String,
     pub token: String,
     /// "unsure", "fairly" or "certain"; the player may leave it out.
     pub confidence: Option<String>,
@@ -249,19 +301,46 @@ async fn cast(
         let refusal = Refusal::new(StatusCode::UNPROCESSABLE_ENTITY, "Not one of the choices.");
         return Ok((Err(refusal), jar));
     }
+    // Limits first: the Turnstile token is single-use, and a refusal for
+    // going too fast shouldn't cost the player their human check.
+    let known = known_player(state, &jar).await?;
+    let ms = server_ms(state, &ballot.served, item.id, known);
+    let limit = state.limits.votes_per_minute;
+    let network = match known {
+        Some(player) => {
+            let key = player.as_bytes();
+            if let Some(wait) = over_limit(state, "vote", key, Duration::minutes(1), limit).await? {
+                return Ok((Err(Refusal::too_many(wait, "Slow down a little.")), jar));
+            }
+            None
+        }
+        None => {
+            let network = network_of(state, &ip);
+            if let Some(refusal) = network_full(state, &network).await? {
+                return Ok((Err(refusal), SignedCookieJar::new(state.key.clone())));
+            }
+            Some(network)
+        }
+    };
     if let Some(refusal) = human_check(state, &ballot.token, &ip).await? {
         return Ok((Err(refusal), jar));
     }
-    let (player, jar) = match ensure_player(state, jar, &ip).await? {
-        Ok(found) => found,
-        Err(refusal) => return Ok((Err(refusal), SignedCookieJar::new(state.key.clone()))),
+    let (player, jar) = match (known, network) {
+        (Some(player), _) => (player, jar),
+        (None, network) => {
+            let (player, jar) = create_player(state, jar, &network.unwrap_or_default()).await?;
+            // A new player's first vote opens their window like any other.
+            over_limit(
+                state,
+                "vote",
+                player.as_bytes(),
+                Duration::minutes(1),
+                limit,
+            )
+            .await?;
+            (player, jar)
+        }
     };
-    let limit = state.limits.votes_per_minute;
-    let key = player.as_bytes();
-    if let Some(wait) = over_limit(state, "vote", key, Duration::minutes(1), limit).await? {
-        return Ok((Err(Refusal::too_many(wait, "Slow down a little.")), jar));
-    }
-    let ms = ballot.ms_to_answer.clamp(0, MAX_MS_TO_ANSWER.into()) as i32;
     // Overtime answers belong to no day.
     let vote_day = (!ballot.overtime).then_some(day);
     let recorded = dorman_db::record_vote_with_confidence(
@@ -294,7 +373,10 @@ async fn cast(
 pub struct VoteRequest {
     item_id: Uuid,
     answer: String,
-    ms_to_answer: i32,
+    /// The card's `served` token. Any `ms_to_answer` the client sends is
+    /// ignored: the server times the answer itself.
+    #[serde(default)]
+    served: String,
     #[serde(default)]
     turnstile_token: String,
     #[serde(default)]
@@ -316,9 +398,6 @@ struct VoteResponse {
     /// Null in Overtime, which never runs out the same way.
     remaining: Option<usize>,
     split: Vec<SplitRow>,
-    /// Why the answer is what it is, if the item says. Sent only now that
-    /// the vote is in.
-    explanation: Option<String>,
 }
 
 /// `POST /api/vote`, from `play.js`: answers with the live split.
@@ -332,7 +411,7 @@ pub async fn vote_json(
         overtime: request.overtime,
         item_id: request.item_id,
         answer: request.answer,
-        ms_to_answer: request.ms_to_answer.into(),
+        served: request.served,
         token: request.turnstile_token,
         confidence: request.confidence,
     };
@@ -353,7 +432,6 @@ pub async fn vote_json(
         recorded: taken.recorded,
         remaining: taken.remaining,
         split,
-        explanation: taken.item.item.explanation().map(str::to_string),
     };
     Ok((jar, Json(response)).into_response())
 }
@@ -362,9 +440,9 @@ pub async fn vote_json(
 pub struct VoteForm {
     item_id: Uuid,
     answer: String,
-    /// When the server rendered the card, in Unix milliseconds. Without the
-    /// script there's no other way to time the answer.
-    shown_at: i64,
+    /// The card's `served` token, for timing the answer.
+    #[serde(default)]
+    served: String,
     #[serde(rename = "cf-turnstile-response", default)]
     turnstile_token: String,
     /// Present, as "1", on an Overtime card.
@@ -381,13 +459,12 @@ pub async fn vote_form(
     ip: ClientIp,
     Form(form): Form<VoteForm>,
 ) -> Result<Response, AppError> {
-    let now = state.clock.now().timestamp_millis();
     let overtime = form.overtime.is_some();
     let ballot = Ballot {
         overtime,
         item_id: form.item_id,
         answer: form.answer,
-        ms_to_answer: now.saturating_sub(form.shown_at),
+        served: form.served,
         token: form.turnstile_token,
         confidence: form.confidence.filter(|c| !c.is_empty()),
     };

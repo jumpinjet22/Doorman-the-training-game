@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,9 @@ class Vote:
     # False for Overtime answers, which belong to no day. Only daily answers
     # earn trust on gold: Overtime serves past gold with its live split.
     daily: bool = True
+    # When the player's account was created (None if unknown, which keeps
+    # it out of cohort detection).
+    joined: datetime | None = None
 
 
 @dataclass(frozen=True)

@@ -15,6 +15,7 @@ the flags below, each overriding the one before.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from collections.abc import Mapping
 from datetime import date
@@ -23,8 +24,9 @@ import psycopg
 
 from dorman_scorer import config as cfg
 from dorman_scorer import db
-from dorman_scorer.consensus import gold_verdicts
-from dorman_scorer.scoring import score
+from dorman_scorer.scoring import score_all
+
+log = logging.getLogger("dorman_scorer")
 
 _HELP = {
     "min_weight": "total trust an item needs before it can settle",
@@ -34,6 +36,10 @@ _HELP = {
     "dispute_after_days": "days after first showing before an unsettled item is disputed",
     "new_account_hours": "accounts younger than this when voting count as new",
     "brigade_min_votes": "new-account votes for one answer on one item that make a brigade",
+    "cohort_window_hours": "accounts created this close together can form a cohort",
+    "cohort_min_shared": "same against-the-crowd answers that can link two accounts",
+    "cohort_agreement": "share of all their shared items two linked accounts must agree on",
+    "cohort_min_size": "linked accounts that make a cohort",
 }
 
 
@@ -51,7 +57,19 @@ def config_from(args: argparse.Namespace, environ: Mapping[str, str]) -> cfg.Con
     return cfg.build(args.profile, **overrides)
 
 
+def warnings_for(config: cfg.Config) -> list[str]:
+    """Settings that switch a defence off, in words for the run log."""
+    found = []
+    if config.new_account_hours <= 0:
+        found.append(
+            "new_account_hours is 0: brigade detection by account age is off "
+            "(the soft-launch profile). Switch back to the default profile after launch."
+        )
+    return found
+
+
 def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None) -> int:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     environ = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -84,16 +102,19 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
     except ValueError as err:
         parser.error(f"bad configuration: {err}")
 
+    warnings = warnings_for(config)
+    for warning in warnings:
+        log.warning("%s", warning)
+
     with psycopg.connect(args.database_url) as conn, conn.transaction():
         db.lock(conn)
         items, votes = db.load(conn)
         today = args.today or db.today(conn)
-        players, verdicts = score(items, votes, today, config)
+        players, verdicts, gold_rows = score_all(items, votes, today, config)
         decided = [v for v in verdicts if v.status != "open"]
-        trust = {player: scored.trust for player, scored in players.items()}
-        # Gold gets rows too, so the reveal page can't tell it apart; only
-        # the non-gold verdicts are counted.
-        db.save(conn, players, [*verdicts, *gold_verdicts(items, votes, trust)])
+        # Gold gets rows too, decided by the crowd the same way, so the reveal
+        # page can't tell it apart; only the non-gold verdicts are counted.
+        db.save(conn, players, [*verdicts, *gold_rows])
         settled = sum(1 for v in decided if v.status == "settled")
         db.record_run(
             conn,
@@ -105,6 +126,7 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
                 disputed=len(decided) - settled,
                 brigaded=sum(1 for v in verdicts if v.zeroed_votes),
                 config=config.as_dict(),
+                warnings=warnings,
             ),
         )
 

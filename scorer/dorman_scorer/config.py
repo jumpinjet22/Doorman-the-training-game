@@ -26,10 +26,24 @@ class Config:
     # ...and this many new-account votes for one answer on one item, against
     # what established players say, is a brigade.
     brigade_min_votes: int = 8
+    # Cohort detection, whatever the accounts' age: accounts that signed up
+    # within this many hours of each other...
+    cohort_window_hours: float = 72.0
+    # ...and gave the same answer against everyone else's most common one on
+    # at least this many items...
+    cohort_min_shared: int = 5
+    # ...and agree on at least this share of all the items they both answered
+    # are linked; this many linked accounts make a cohort.
+    cohort_agreement: float = 0.9
+    cohort_min_size: int = 8
 
     @property
     def dispute_after(self) -> timedelta:
         return timedelta(days=self.dispute_after_days)
+
+    @property
+    def cohort_window(self) -> timedelta:
+        return timedelta(hours=self.cohort_window_hours)
 
     @property
     def new_account_age(self) -> timedelta:
@@ -42,7 +56,9 @@ class Config:
 # Friends-only soft launch (plan M7): fewer players, so a lower bar to settle.
 # Brigade detection is off: every account is new on launch day, and since an
 # account's age is fixed when it votes, those votes would be zeroed for good.
-# It's invite-only, so there's nobody to brigade. Dawid-Skene still applies.
+# It's invite-only, so there's nobody to brigade. Dawid-Skene and cohort
+# detection still apply, and every run with the age check off logs a warning
+# and records it in scoring_runs, so it can't stay off unnoticed after launch.
 SOFT_LAUNCH = Config(min_weight=2.0, min_share=0.7, new_account_hours=0.0)
 PROFILES = {"default": Config(), "soft-launch": SOFT_LAUNCH}
 

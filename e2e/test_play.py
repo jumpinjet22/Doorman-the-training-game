@@ -84,6 +84,11 @@ def _publish(dorman: Dorman, bin_dir: Path, day: str) -> None:
 
 
 def _run_scorer(dorman: Dorman, today: str) -> None:
+    """The night run. One player is the whole crowd here, so the bar to settle
+    is lowered until their answers are enough: gold is decided by the crowd
+    like everything else, never settled on its known answer regardless. The
+    bar is tiny because a browser test clicks in milliseconds, so its player's
+    trust is flagged down several times over (timing is measured server-side)."""
     subprocess.run(
         [
             sys.executable,
@@ -93,6 +98,8 @@ def _run_scorer(dorman: Dorman, today: str) -> None:
             dorman.db_url,
             "--today",
             today,
+            "--min-weight",
+            "0.000001",
         ],
         check=True,
         capture_output=True,
@@ -179,13 +186,14 @@ def test_the_next_morning_the_card_fills_in_and_the_streak_is_two(
     assert _card_text(page) == f"🚪 #{number}  {'⬜' * total}"
 
     # The night run, then the next morning, before the next set goes up
-    # (anything back in it would stay hidden).
+    # (anything back in it would stay hidden). This checks the card fills in,
+    # not settling thresholds, so the run's bar is low enough for one player.
     _run_scorer(dorman, second)
     dorman.set_clock(f"{second}T08:00:00Z")
     page.goto("/yesterday")
     filled = _card_text(page)
     assert re.fullmatch(rf"🚪 #{number}  [⬜🟩🟨🟥]{{{total}}}", filled), filled
-    assert set(filled) & set("🟩🟨🟥"), "items with known answers are scored by morning"
+    assert set(filled) & set("🟩🟨🟥"), "items are scored by morning"
 
     _publish(dorman, bin_dir, second)
 

@@ -20,8 +20,11 @@ pub struct PublicItem {
     pub scene: Option<String>,
     pub choices: Vec<Choice>,
     pub answered: Option<String>,
-    /// Why the answer is what it is. Set only once the item is answered, so
-    /// an unanswered card can never carry it.
+    /// Why the answer is what it is. Only `/yesterday` sets it, on an item
+    /// the viewer answered that can't be shown again: an explanation names
+    /// the answer, and gold has explanations as often as anything else, so
+    /// one sent while the card can still come round would be a gold answer
+    /// someone else could use.
     pub explanation: Option<String>,
 }
 
@@ -75,8 +78,9 @@ pub struct CardPage {
     pub position: usize,
     pub total: usize,
     pub item: PublicItem,
-    /// When this card was rendered, Unix milliseconds, for timing a form post.
-    pub shown_at: i64,
+    /// Signed with when this card was served and to whom, so the server can
+    /// time the answer (`voting::serve_token`).
+    pub served: String,
     pub turnstile_site_key: String,
     /// Set once the card is answered.
     pub split: Option<Vec<Bar>>,
@@ -266,11 +270,6 @@ pub fn reply_order(pair: &PairItem) -> Vec<&Reply> {
         .collect()
 }
 
-fn explanation(stored: &StoredItem, answered: &Option<String>) -> Option<String> {
-    answered.as_ref()?;
-    stored.item.explanation().map(str::to_string)
-}
-
 impl PublicItem {
     pub fn from_stored(stored: &StoredItem, answered: Option<String>) -> Self {
         match &stored.item {
@@ -287,7 +286,7 @@ impl PublicItem {
                         label: intent_label(o),
                     })
                     .collect(),
-                explanation: explanation(stored, &answered),
+                explanation: None,
                 answered,
             },
             BatchItem::Pair(item) => {
@@ -309,7 +308,7 @@ impl PublicItem {
                     text: item.text.clone(),
                     scene: item.scene.clone(),
                     choices,
-                    explanation: explanation(stored, &answered),
+                    explanation: None,
                     answered,
                 }
             }
@@ -346,7 +345,7 @@ mod tests {
                 position: 1,
                 total: 1,
                 item: public,
-                shown_at: 0,
+                served: String::new(),
                 turnstile_site_key: "site-key".into(),
                 split: None,
                 last: false,

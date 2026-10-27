@@ -12,7 +12,7 @@ use chrono::Duration;
 use dorman_api::pages::LEADERBOARD_CACHE_SECS;
 use dorman_api::turnstile::CloudflareVerifier;
 use dorman_api::{app, cookie_key, network_salt, AppState, Limits, MAX_BODY_BYTES};
-use dorman_core::{BatchItem, Clock, FixedClock, TurnstileVerifier};
+use dorman_core::{BatchItem, FixedClock, TurnstileVerifier};
 use dorman_db::StoredItem;
 use dorman_testkit::{count, day, seed_day, valid_answer, StubTurnstile};
 use http_body_util::BodyExt;
@@ -224,6 +224,13 @@ impl VoteRequest {
 
 fn vote_body(item: &StoredItem, answer: &str) -> Value {
     json!({"item_id": item.id, "answer": answer, "ms_to_answer": 2500})
+}
+
+/// The `served` token a card page was rendered with.
+fn served(page: &str) -> String {
+    let start = page.find(r#"name="served" value=""#).expect("a card") + 21;
+    let end = start + page[start..].find('"').unwrap();
+    page[start..end].to_string()
 }
 
 fn with_token(item: &StoredItem, token: &str) -> Value {
@@ -443,21 +450,69 @@ async fn malformed_votes_are_rejected(pool: PgPool) {
     assert!(h.send(request).await.0.is_client_error());
 }
 
+/// Time to answer, by item, as stored.
+async fn stored_times(h: &Harness) -> Vec<(uuid::Uuid, i32)> {
+    sqlx::query_as("SELECT item_id, ms_to_answer FROM votes ORDER BY created_at")
+        .fetch_all(&h.pool)
+        .await
+        .unwrap()
+}
+
 #[sqlx::test(migrations = "../db/migrations")]
-async fn answer_times_are_clamped(pool: PgPool) {
+async fn answer_times_come_from_the_server_not_the_client(pool: PgPool) {
     let h = Harness::new(pool);
     let items = seed_day(&h.pool, day(TODAY)).await;
-    let (a, b) = (&items[0], &items[1]);
-    for (item, ms) in [(a, -50), (b, i32::MAX)] {
-        let body = json!({"item_id": item.id, "answer": valid_answer(item), "ms_to_answer": ms});
-        assert_eq!(h.vote(None, body).await.0, StatusCode::OK);
-    }
-    let times: Vec<i32> =
-        sqlx::query_scalar("SELECT ms_to_answer FROM votes ORDER BY ms_to_answer")
-            .fetch_all(&h.pool)
-            .await
-            .unwrap();
-    assert_eq!(times, vec![0, 600_000]);
+
+    // Shown, answered 4 s later, but the client claims a leisurely minute.
+    let token = served(&h.get("/", None).await.2);
+    h.clock.advance(Duration::seconds(4));
+    let mut body = vote_body(&items[0], &valid_answer(&items[0]));
+    body["served"] = json!(token);
+    body["ms_to_answer"] = json!(60_000);
+    let (status, cookie, _) = h.vote(None, body).await;
+    assert_eq!(status, StatusCode::OK);
+    let cookie = cookie.unwrap();
+
+    // A script that answers in 300 ms and says it took 9 s.
+    let token = served(&h.get("/", Some(&cookie)).await.2);
+    h.clock.advance(Duration::milliseconds(300));
+    let mut body = vote_body(&items[1], &valid_answer(&items[1]));
+    body["served"] = json!(token);
+    body["ms_to_answer"] = json!(9_000);
+    h.vote(Some(&cookie), body).await;
+
+    // The next card's token, reused for a different item, or none at all,
+    // or another player's: no time.
+    let token = served(&h.get("/", Some(&cookie)).await.2);
+    h.clock.advance(Duration::seconds(5));
+    let mut body = vote_body(&items[3], &valid_answer(&items[3]));
+    body["served"] = json!(token);
+    h.vote(Some(&cookie), body).await;
+    h.vote(
+        Some(&cookie),
+        vote_body(&items[4], &valid_answer(&items[4])),
+    )
+    .await;
+    let mut body = vote_body(&items[2], &valid_answer(&items[2]));
+    body["served"] = json!(token);
+    let (status, _, _) = h.vote(None, body).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Left open for an hour: clamped like any walk-away.
+    let token = served(&h.get("/", Some(&cookie)).await.2);
+    h.clock.advance(Duration::hours(1));
+    let mut body = vote_body(&items[2], &valid_answer(&items[2]));
+    body["served"] = json!(token);
+    h.vote(Some(&cookie), body).await;
+
+    let ids: Vec<_> = [0, 1, 3, 4, 2, 2].iter().map(|&n| items[n].id).collect();
+    let times: Vec<_> = stored_times(&h).await;
+    assert_eq!(
+        times,
+        ids.into_iter()
+            .zip([4000, 300, 0, 0, 0, 600_000])
+            .collect::<Vec<_>>()
+    );
 }
 
 // -- security --------------------------------------------------------------
@@ -1123,21 +1178,19 @@ async fn a_card_works_as_a_plain_form_post(pool: PgPool) {
     let item = &items[0];
     let answer = valid_answer(item);
     let (_, _, page) = h.get("/", None).await;
-    let shown_at = h.clock.now().timestamp_millis();
-    assert!(page.contains(&format!(r#"name="shown_at" value="{shown_at}""#)));
+    let shown = served(&page);
     assert!(page.contains(r#"<form class="vote" method="post" action="/vote">"#));
 
     h.clock.advance(Duration::seconds(4));
     let token = h.turnstile.issue();
     let id = item.id.to_string();
-    let shown = shown_at.to_string();
     let response = h
         .form_vote(
             None,
             &[
                 ("item_id", &id),
                 ("answer", &answer),
-                ("shown_at", &shown),
+                ("served", &shown),
                 ("cf-turnstile-response", &token),
             ],
         )
@@ -1972,7 +2025,7 @@ async fn items_with_explanation_first(h: &Harness) -> Vec<StoredItem> {
 }
 
 #[sqlx::test(migrations = "../db/migrations")]
-async fn an_explanation_appears_only_after_the_vote(pool: PgPool) {
+async fn an_explanation_waits_for_the_reveal(pool: PgPool) {
     let h = Harness::new(pool);
     let items = items_with_explanation_first(&h).await;
     let item = &items[0];
@@ -1980,23 +2033,36 @@ async fn an_explanation_appears_only_after_the_vote(pool: PgPool) {
     // Askama escapes quotes; compare on the text before the first one.
     let lead: &str = explanation.split(['"', '\'']).next().unwrap();
 
-    // The card that's up first may not be this one, so check it by its page
-    // for a fresh player: no explanation text anywhere before a vote.
     let before = h.get("/", None).await.2;
     assert!(!before.contains("Why:"), "no explanation before voting");
 
+    // An explanation names the answer, and gold has them as often as any
+    // item, so nothing sent while the card can still come round carries one.
     let (status, cookie, body) = h.vote(None, vote_body(item, &valid_answer(item))).await;
     assert_eq!(status, StatusCode::OK);
+    let cookie = cookie.unwrap();
     let body: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(body["explanation"], explanation);
+    assert!(body.get("explanation").is_none(), "{body}");
+    let (_, _, page) = h.get(&format!("/?after={}", item.id), Some(&cookie)).await;
+    assert!(!page.contains("Why:"));
+    let cookie = h.play_all_as(Some(cookie), &items[1..]).await;
+    let (_, _, page) = h.get("/results", Some(&cookie)).await;
+    assert!(!page.contains("Why:"));
 
-    let (_, _, page) = h
-        .get(&format!("/?after={}", item.id), cookie.as_deref())
-        .await;
-    assert!(
-        page.contains("Why:") && page.contains(lead),
-        "the answered card explains itself"
-    );
+    // Once it's out of play, the reveal explains it to whoever answered it.
+    decide(
+        &h,
+        item,
+        Some(&valid_answer(item)),
+        json!({ valid_answer(item): 1.0 }),
+    )
+    .await;
+    h.clock.advance(Duration::days(1));
+    h.scored("2026-10-28").await;
+    let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
+    assert!(page.contains("Why:") && page.contains(lead), "{page}");
+    let (_, _, page) = h.get("/yesterday", None).await;
+    assert!(!page.contains("Why:"));
 }
 
 #[sqlx::test(migrations = "../db/migrations")]
@@ -2084,4 +2150,268 @@ async fn the_leaderboard_keeps_players_in_their_own_rank_tier(pool: PgPool) {
     }
     let (_, _, page) = h.get("/leaderboard", None).await;
     assert!(page.contains("only against players of your own rank"));
+}
+
+// -- gold that can't be harvested ---------------------------------------------------
+
+/// The `/yesterday` rows that show how the crowd answered, by item id.
+fn revealed(page: &str) -> Vec<String> {
+    page.split(r#"<li class="result" data-item=""#)
+        .skip(1)
+        .filter(|row| row.contains("The crowd settled on:") || row.contains("Why:"))
+        .map(|row| row[..36].to_string())
+        .collect()
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn gold_that_still_has_a_showing_to_come_is_not_revealed(pool: PgPool) {
+    let h = Harness::new(pool);
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let cookie = h.play_all(&items).await;
+    for item in &items {
+        let mine = valid_answer(item);
+        decide(&h, item, Some(&mine), json!({ mine.clone(): 1.0 })).await;
+    }
+    let gold = items
+        .iter()
+        .find(|i| i.item.gold_answer().is_some())
+        .unwrap();
+    let plain = items
+        .iter()
+        .find(|i| i.item.gold_answer().is_none())
+        .unwrap();
+    // Day N+1's set leaves both out, but they're already in N+2's: shown
+    // once, showings left, and coming back.
+    let others: Vec<String> = items
+        .iter()
+        .filter(|i| i.id != gold.id && i.id != plain.id)
+        .map(|i| i.item_key.clone())
+        .collect();
+    dorman_testkit::publish(&h.pool, day("2026-10-28"), &others[..1]).await;
+    dorman_testkit::publish(
+        &h.pool,
+        day("2026-10-29"),
+        &[gold.item_key.clone(), plain.item_key.clone()],
+    )
+    .await;
+    h.clock.advance(Duration::days(1));
+    h.scored("2026-10-28").await;
+
+    let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
+    let shown = revealed(&page);
+    assert!(!shown.contains(&gold.id.to_string()), "gold revealed early");
+    assert!(!shown.contains(&plain.id.to_string()), "and treated alike");
+    assert!(!listed(&page).contains(&gold.id.to_string()));
+    assert_eq!(listed(&page).len(), items.len() - 3);
+    let card = format!(
+        "🚪 #3  {}",
+        items
+            .iter()
+            .map(|i| {
+                let back = i.id == gold.id || i.id == plain.id || i.item_key == others[0];
+                if back {
+                    '⬜'
+                } else {
+                    '🟩'
+                }
+            })
+            .collect::<String>()
+    );
+    assert!(page.contains(&card), "want {card}: {page}");
+
+    // Nor does a "right" answer on it tick up anyone's record yet.
+    let player: uuid::Uuid = sqlx::query_scalar("SELECT player_id FROM votes LIMIT 1")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    let (_, scored, right) = dorman_db::player_record(&h.pool, player).await.unwrap();
+    assert_eq!(
+        (scored, right),
+        (items.len() as i64 - 3, items.len() as i64 - 3)
+    );
+}
+
+/// Property: run the real scheduler for weeks over a pool of gold, a day at a
+/// time as production does, with the scorer settling every item on its known
+/// answer (the crowd always right, the worst case) and a new player each day
+/// who answers the whole set. Each morning that player reads `/yesterday`.
+/// No set published after a gold item's answer was shown there contains it.
+#[sqlx::test(migrations = "../db/migrations")]
+async fn no_gold_is_revealed_before_it_retires(pool: PgPool) {
+    use dorman_core::{pick_daily_set, DailyPlan};
+    use std::collections::HashSet;
+
+    let h = Harness::new(pool);
+    let mut batch = dorman_testkit::example_batch();
+    let template = batch.items.clone();
+    batch.items = (0..80)
+        .map(|n| {
+            let mut item = template[n % template.len()].clone();
+            match &mut item {
+                BatchItem::Intent(i) => i.item_key = format!("k{n}"),
+                BatchItem::Pair(p) => p.item_key = format!("k{n}"),
+            }
+            item
+        })
+        .collect();
+    dorman_testkit::load_pending(&h.pool, &batch).await;
+    dorman_testkit::approve(&h.pool, &batch.batch).await;
+
+    let first = day("2026-10-01");
+    let mut revealed_gold: HashSet<String> = HashSet::new();
+    let (mut checked, mut ran_on, mut days_run) = (0, 0, 0);
+    let mut last: Option<(Vec<StoredItem>, String)> = None;
+    for n in 0..30 {
+        let today = first + chrono::Days::new(n);
+        let pools = dorman_db::daily_pools(&h.pool, today - chrono::Days::new(1))
+            .await
+            .unwrap();
+        let keys = pick_daily_set(
+            &today.to_string(),
+            DailyPlan::default(),
+            &pools.new,
+            &pools.gold,
+            &pools.carry_over,
+        );
+        dorman_db::set_daily(&h.pool, today, &keys).await.unwrap();
+        let set = dorman_db::daily_set(&h.pool, today).await.unwrap().unwrap();
+        if set.is_empty() {
+            break; // The pool has run dry.
+        }
+        days_run += 1;
+        for item in &set {
+            assert!(
+                !revealed_gold.contains(&item.id.to_string()),
+                "gold {} was revealed and is back on {today}",
+                item.item_key
+            );
+        }
+        h.clock.set(today.and_hms_opt(12, 0, 0).unwrap().and_utc());
+
+        // This morning's reveal of yesterday, now that today's set is up.
+        if let Some((yesterday, cookie)) = &last {
+            ran_on += set
+                .iter()
+                .filter(|i| {
+                    i.item.gold_answer().is_some() && yesterday.iter().any(|y| y.id == i.id)
+                })
+                .count();
+            h.scored(&today.to_string()).await;
+            let (_, _, page) = h.get("/yesterday", Some(cookie)).await;
+            for id in revealed(&page) {
+                let item = yesterday.iter().find(|i| i.id.to_string() == id).unwrap();
+                if item.item.gold_answer().is_some() {
+                    checked += 1;
+                    revealed_gold.insert(id);
+                }
+            }
+        }
+
+        let cookie = h.play_all(&set).await;
+        for item in &set {
+            let label = item
+                .item
+                .gold_answer()
+                .map(str::to_string)
+                .unwrap_or_else(|| valid_answer(item));
+            sqlx::query(
+                "INSERT INTO consensus (item_id, label, share, total_weight, status, split)
+                 VALUES ($1, $2, 1, 6, 'settled', $3) ON CONFLICT DO NOTHING",
+            )
+            .bind(item.id)
+            .bind(&label)
+            .bind(json!({ label.clone(): 6.0 }))
+            .execute(&h.pool)
+            .await
+            .unwrap();
+        }
+        last = Some((set, cookie));
+    }
+    assert!(days_run >= 15, "only {days_run} days had a set");
+    assert!(ran_on > 0, "some gold ran on, so the property bites");
+    assert!(checked > 10, "only {checked} gold reveals checked");
+}
+
+// -- rate limits and the human check ------------------------------------------
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn a_player_told_to_slow_down_keeps_their_human_check(pool: PgPool) {
+    let h = Harness::with_limits(
+        pool,
+        Limits {
+            votes_per_minute: 1,
+            ..Limits::default()
+        },
+    );
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let cookie = h.new_player(&items[0]).await;
+    let token = h.turnstile.issue();
+    let calls = h.turnstile.calls();
+    let body = with_token(&items[1], &token);
+    let (status, _, _) = h.vote(Some(&cookie), body.clone()).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(h.turnstile.calls(), calls, "Cloudflare never asked");
+
+    // The same token still works once the window has passed.
+    h.clock.advance(Duration::seconds(60));
+    let (status, _, _) = h.vote(Some(&cookie), body).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn only_players_actually_created_count_against_a_network(pool: PgPool) {
+    let h = Harness::with_limits(
+        pool,
+        Limits {
+            new_players_per_hour: 2,
+            ..Limits::default()
+        },
+    );
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let body = vote_body(&items[0], &valid_answer(&items[0]));
+    // Failed human checks, and refusals once the network is full, use up
+    // nothing.
+    for _ in 0..3 {
+        let (status, _, _) = h
+            .vote(None, with_token(&items[0], "forged-token-xxxxxxxxxx"))
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    assert_eq!(h.vote(None, body.clone()).await.0, StatusCode::OK);
+    assert_eq!(h.vote(None, body.clone()).await.0, StatusCode::OK);
+    for _ in 0..3 {
+        assert_eq!(
+            h.vote(None, body.clone()).await.0,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    let hits: i32 = sqlx::query_scalar("SELECT hits FROM rate_limits WHERE scope = 'new_player'")
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(hits, 2);
+    assert_eq!(count(&h.pool, "players").await, 2);
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn players_with_no_client_address_are_counted_as_an_error(pool: PgPool) {
+    use std::sync::atomic::Ordering;
+
+    let h = Harness::with(
+        pool,
+        Setup {
+            client_ip_header: Some(HeaderName::from_static("x-forwarded-for")),
+            ..Setup::default()
+        },
+    );
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let before = dorman_api::voting::UNKNOWN_NETWORK_PLAYERS.load(Ordering::Relaxed);
+    for _ in 0..2 {
+        let (status, _, _) = h
+            .vote(None, vote_body(&items[0], &valid_answer(&items[0])))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let after = dorman_api::voting::UNKNOWN_NETWORK_PLAYERS.load(Ordering::Relaxed);
+    assert!(after - before >= 2, "{before} -> {after}");
 }

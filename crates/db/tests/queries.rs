@@ -849,6 +849,146 @@ async fn a_retired_gold_item_never_comes_back(pool: PgPool) {
         for (key, times) in shown {
             assert!(times <= limit, "{key} shown {times} times, limit {limit}");
         }
+        // Once revealed (the day after any showing it misses) it's gone:
+        // every gold item's showings are one unbroken run of days.
+        let runs: Vec<(String, i64, i32)> = sqlx::query_as(
+            "SELECT i.item_key, count(*), max(d.day) - min(d.day) + 1
+             FROM daily_sets d JOIN items i ON i.id = ANY (d.item_ids)
+             GROUP BY i.item_key",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        for (item, times, span) in runs {
+            assert_eq!(times, i64::from(span), "{item} came back after a gap");
+        }
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn gold_that_misses_a_day_never_comes_back(pool: PgPool) {
+    let batch = load_example(&pool).await;
+    let keys: Vec<String> = batch
+        .items
+        .iter()
+        .map(|i| i.item_key().to_string())
+        .collect();
+    let gold: Vec<String> = batch
+        .items
+        .iter()
+        .filter(|i| i.gold_answer().is_some())
+        .map(|i| i.item_key().to_string())
+        .collect();
+    let plain = keys.iter().find(|k| !gold.contains(k)).unwrap();
+    let (a, b) = (&gold[0], &gold[1]);
+    // Day 1 both; day 2 only `a`.
+    publish(&pool, day("2026-10-01"), &[a.clone(), b.clone()]).await;
+    publish(&pool, day("2026-10-02"), &[a.clone(), plain.clone()]).await;
+
+    let pools = dorman_db::daily_pools(&pool, day("2026-10-02"))
+        .await
+        .unwrap();
+    assert!(pools.gold.contains(a), "running on, with showings left");
+    assert!(
+        !pools.gold.contains(b),
+        "shown once, so four showings left, but revealed on day 2: retired"
+    );
+    // Still retired on any later day, set or no set.
+    for later in ["2026-10-03", "2026-10-09"] {
+        let pools = dorman_db::daily_pools(&pool, day(later)).await.unwrap();
+        assert!(!pools.gold.contains(b) && !pools.gold.contains(a));
+    }
+    // Never-shown gold is always available.
+    assert!(pools.gold.contains(&gold[2]));
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn records_wait_until_an_item_is_out_of_play(pool: PgPool) {
+    let items = seed_day(&pool, day("2026-10-27")).await;
+    let (item, other) = (&items[0], &items[1]);
+    let answer = valid_answer(item);
+    let player = dorman_testkit::player_with_votes(
+        &pool,
+        day("2026-10-27"),
+        &[
+            (item.id, answer.as_str()),
+            (other.id, valid_answer(other).as_str()),
+        ],
+    )
+    .await;
+    for i in [item, other] {
+        sqlx::query(
+            "INSERT INTO consensus (item_id, label, share, total_weight, status, split)
+             VALUES ($1, $2, 1, 6, 'settled', '{}')",
+        )
+        .bind(i.id)
+        .bind(valid_answer(i))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO scoring_runs (day, started_at, finished_at, players, items,
+             settled, disputed, brigaded, export_path, config)
+         VALUES ('2026-10-28', now(), now(), 0, 0, 0, 0, 0, '', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    // `item` is back in the 28th's set: it doesn't count yet.
+    publish(
+        &pool,
+        day("2026-10-28"),
+        std::slice::from_ref(&item.item_key),
+    )
+    .await;
+    assert_eq!(
+        dorman_db::player_record(&pool, player).await.unwrap(),
+        (0, 1, 1)
+    );
+    assert_eq!(
+        dorman_db::in_play(&pool, &[item.id, other.id], day("2026-10-28"))
+            .await
+            .unwrap(),
+        vec![item.id]
+    );
+    // Once the run for the 29th is in and it wasn't shown again, it does.
+    sqlx::query(
+        "INSERT INTO scoring_runs (day, started_at, finished_at, players, items,
+             settled, disputed, brigaded, export_path, config)
+         VALUES ('2026-10-29', now(), now(), 0, 0, 0, 0, 0, '', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        dorman_db::player_record(&pool, player).await.unwrap(),
+        (0, 2, 2)
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn rate_limit_hits_can_be_read_without_counting_one(pool: PgPool) {
+    let start = Utc::now();
+    assert_eq!(
+        dorman_db::rate_limit_hits(&pool, "s", b"k", start)
+            .await
+            .unwrap(),
+        0
+    );
+    dorman_db::hit_rate_limit(&pool, "s", b"k", start)
+        .await
+        .unwrap();
+    dorman_db::hit_rate_limit(&pool, "s", b"k", start)
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            dorman_db::rate_limit_hits(&pool, "s", b"k", start)
+                .await
+                .unwrap(),
+            2
+        );
     }
 }
 
@@ -1032,6 +1172,52 @@ async fn handles_are_unique_whatever_their_case(pool: PgPool) {
             .unwrap(),
         None
     );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn the_board_counts_only_items_out_of_play(pool: PgPool) {
+    let items = seed_day(&pool, day("2026-10-27")).await;
+    let (item, other) = (&items[0], &items[1]);
+    let player = dorman_testkit::player_with_votes(
+        &pool,
+        day("2026-10-27"),
+        &[(item.id, valid_answer(item).as_str()), (other.id, "not it")],
+    )
+    .await;
+    assert!(dorman_db::set_handle(&pool, player, "Knocker")
+        .await
+        .unwrap());
+    for i in [item, other] {
+        sqlx::query(
+            "INSERT INTO consensus (item_id, label, share, total_weight, status, split)
+             VALUES ($1, $2, 1, 6, 'settled', '{}')",
+        )
+        .bind(i.id)
+        .bind(valid_answer(i))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO scoring_runs (day, started_at, finished_at, players, items,
+             settled, disputed, brigaded, export_path, config)
+         VALUES ('2026-10-28', now(), now(), 0, 0, 0, 0, 0, '', '{}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    publish(
+        &pool,
+        day("2026-10-28"),
+        std::slice::from_ref(&item.item_key),
+    )
+    .await;
+    let records = dorman_db::handle_records(&pool).await.unwrap();
+    assert_eq!(records, vec![("Knocker".to_string(), 0, 1, 0)]);
+    let week = dorman_db::weekly_standings(&pool, day("2026-10-26"), day("2026-10-28"))
+        .await
+        .unwrap();
+    assert_eq!(week, vec![("Knocker".to_string(), 1, 0, false)]);
 }
 
 #[sqlx::test(migrations = "./migrations")]

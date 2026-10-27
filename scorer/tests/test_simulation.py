@@ -8,6 +8,7 @@ from datetime import timedelta
 
 import pytest
 
+from dorman_scorer.cohort import cohorts
 from dorman_scorer.config import SOFT_LAUNCH, Config
 from dorman_scorer.model import Vote
 from dorman_scorer.scoring import score
@@ -176,3 +177,57 @@ def test_large_crowds_over_two_weeks(seed: int) -> None:
     world, scores, verdicts, settled, accuracy = _run(crowd)
     _assert_thresholds(world, scores, settled, accuracy)
     assert len(settled) >= len(verdicts) * 0.5
+
+
+# -- sleeper farms (pre-aged accounts under the per-item threshold) -----------
+
+
+def test_a_sleeper_farm_cannot_settle_a_wrong_answer() -> None:
+    """Accounts created together two months back, answering harvested gold
+    right and never more than seven to an item: neither new nor a brigade,
+    but they vote as one, so cohort detection mutes them."""
+    world, players, verdicts, settled, accuracy = _run(Crowd(honest=12, sleepers=20))
+    wrong = [v for v in settled if v.label != world.truth[v.item_id]]
+    assert wrong == []
+    assert any(v.zeroed_votes for v in verdicts)
+    assert settled and accuracy >= 0.95
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_a_sleeper_farm_inside_a_bigger_crowd(seed: int) -> None:
+    world, players, verdicts, settled, accuracy = _run(
+        Crowd(honest=40, trolls=10, newcomers=20, sleepers=30, sleeper_per_item=7, seed=seed)
+    )
+    assert accuracy >= 0.95
+    for player, kind in world.player_kind.items():
+        if kind == "troll":
+            assert players[player].trust <= 0.05
+
+
+def test_honest_players_who_joined_together_are_not_a_cohort() -> None:
+    """Every regular here signed up within two days of the others, and the
+    newcomers within one: agreeing with the crowd most of the time isn't
+    voting as one."""
+    world, _, verdicts, settled, accuracy = _run(Crowd(honest=60, newcomers=30, days=10))
+    assert all(v.zeroed_votes == 0 for v in verdicts)
+    assert len(settled) == len(verdicts) and accuracy == 1.0
+
+
+@pytest.mark.parametrize("accuracy", [0.95, 0.98, 1.0])
+def test_a_skilled_crowd_that_joined_together_is_not_a_cohort(accuracy: float) -> None:
+    """Launch day: everyone joined within hours, and good players agree on
+    nearly everything. Agreeing on the right answer isn't a farm's signature;
+    only agreeing against everyone else is."""
+    world = simulate(Crowd(honest=40, honest_accuracy=accuracy, days=7))
+    assert cohorts({i.id: i for i in world.items}, world.votes, Config()) == []
+    _, verdicts = score(world.items, world.votes, world.today)
+    assert all(v.zeroed_votes == 0 for v in verdicts)
+    assert all(v.status == "settled" for v in verdicts)
+    assert all(v.label == world.truth[v.item_id] for v in verdicts)
+
+
+def test_the_sleeper_farm_is_found_as_one_cohort() -> None:
+    world = simulate(Crowd(honest=12, sleepers=20))
+    found = cohorts({i.id: i for i in world.items}, world.votes, Config())
+    farm = {p for p, kind in world.player_kind.items() if kind == "sleeper"}
+    assert found == [farm]

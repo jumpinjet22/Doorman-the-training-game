@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date
+from typing import Any
 
 from dorman_scorer.brigade import brigaded
+from dorman_scorer.cohort import cohort_zeroed
 from dorman_scorer.config import Config
-from dorman_scorer.consensus import BOTH_BAD, Verdict, verdict
+from dorman_scorer.consensus import BOTH_BAD, Verdict, gold_verdicts, verdict
 from dorman_scorer.dawid_skene import dawid_skene
 from dorman_scorer.flags import behavior_flags
 from dorman_scorer.model import Item, PlayerScore, Vote
@@ -28,6 +30,16 @@ def _pair_slot(item: Item, answer: str) -> str:
 def score(
     items: list[Item], votes: list[Vote], today: date, config: Config | None = None
 ) -> tuple[dict[str, PlayerScore], list[Verdict]]:
+    """Trust for every player and a verdict for every non-gold item."""
+    players, verdicts, _ = score_all(items, votes, today, config)
+    return players, verdicts
+
+
+def score_all(
+    items: list[Item], votes: list[Vote], today: date, config: Config | None = None
+) -> tuple[dict[str, PlayerScore], list[Verdict], list[Verdict]]:
+    """`score`, plus the gold items' rows for the reveal page (see
+    `consensus.gold_verdicts`)."""
     config = config or Config()
     by_id = {item.id: item for item in items}
     votes = [v for v in votes if v.item_id in by_id]
@@ -46,11 +58,18 @@ def score(
     # Brigaded votes count for nothing from here on, Dawid-Skene included, so
     # they can't drag the honest players' estimated accuracy down either.
     zeroed = brigaded(by_id, votes, gold_trusts, config)
+    # Accounts that signed up together and keep voting as one, however old
+    # they are and however few of them pile onto any one answer.
+    for item_id, players_on_item in cohort_zeroed(by_id, votes, gold_trusts, config).items():
+        zeroed.setdefault(item_id, set()).update(players_on_item)
     counted = [v for v in votes if v.player_id not in zeroed.get(v.item_id, ())]
 
     # Dawid-Skene per mode, since intent and pair items answer different questions.
     ds_accuracy: dict[str, list[float]] = defaultdict(list)
     posteriors: dict[str, dict[str, float]] = {}
+    # Gold items' posteriors as if their answers weren't known, so their
+    # reveal rows settle (or don't) the same way as everything else.
+    blind: dict[str, dict[str, float]] = {}
     for mode in ("intent", "pair"):
         mode_votes = [v for v in counted if by_id[v.item_id].mode == mode]
         if not mode_votes:
@@ -73,13 +92,11 @@ def score(
                 if i.mode == mode and i.gold_answer
             }
         result = dawid_skene(triples, labels, init_weights=gold_trusts, gold=gold)
-        for item_id, probs in result.posteriors.items():
-            item = by_id[item_id]
-            if mode == "pair" and len(item.reply_keys) == 2:
-                answers = [*item.reply_keys, BOTH_BAD]
-            else:
-                answers = result.labels
-            posteriors[item_id] = {a: float(p) for a, p in zip(answers, probs, strict=True)}
+        _collect(posteriors, result.posteriors, result.labels, by_id, mode)
+        if gold:
+            unclamped = dawid_skene(triples, labels, init_weights=gold_trusts)
+            gold_only = {k: p for k, p in unclamped.posteriors.items() if k in gold}
+            _collect(blind, gold_only, unclamped.labels, by_id, mode)
         chance = 1.0 / len(labels)
         for player, accuracy in result.accuracy.items():
             ds_accuracy[player].append(max(0.0, (accuracy - chance) / (1.0 - chance)))
@@ -107,4 +124,23 @@ def score(
             )
             v.zeroed_votes = len(zeroed.get(item.id, ()))
             verdicts.append(v)
-    return players, verdicts
+    gold_rows = gold_verdicts(items, votes, trust_by_player, today, config, blind)
+    return players, verdicts, gold_rows
+
+
+def _collect(
+    into: dict[str, dict[str, float]],
+    found: dict[str, Any],
+    labels: list[str],
+    by_id: dict[str, Item],
+    mode: str,
+) -> None:
+    """Dawid-Skene posteriors as answer -> probability, pair slots mapped
+    back to the item's own reply keys."""
+    for item_id, probs in found.items():
+        item = by_id[item_id]
+        if mode == "pair" and len(item.reply_keys) == 2:
+            answers = [*item.reply_keys, BOTH_BAD]
+        else:
+            answers = labels
+        into[item_id] = {a: float(p) for a, p in zip(answers, probs, strict=True)}

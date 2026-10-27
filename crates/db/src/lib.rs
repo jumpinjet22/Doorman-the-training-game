@@ -121,7 +121,14 @@ macro_rules! approved {
 pub const GOLD_SHOWINGS: i64 = 5;
 
 /// Only items from approved batches are candidates, and gold retires after
-/// `GOLD_SHOWINGS` days in a set.
+/// `GOLD_SHOWINGS` days in a set, or as soon as it misses a day.
+///
+/// Gold shows on consecutive days only. The day after an item's last showing
+/// `/yesterday` reveals how the crowd answered it, and since the crowd
+/// mostly gets gold right, that reveal is as good as the answer key. So a
+/// gold item that wasn't in yesterday's set has been revealed and must never
+/// come back; one that was (and has showings left) may run on, hidden from
+/// the reveal like any carry-over while it's back.
 pub async fn daily_pools(pool: &PgPool, before: NaiveDate) -> Result<DailyPools, Error> {
     daily_pools_retiring(pool, before, GOLD_SHOWINGS).await
 }
@@ -143,12 +150,15 @@ pub async fn daily_pools_retiring(
     .fetch_all(pool)
     .await?;
     let gold = sqlx::query(concat!(
-        "SELECT item_key FROM items i
+        "SELECT item_key FROM items i,
+           LATERAL (SELECT count(*) AS shown, min(d.day) AS first, max(d.day) AS last
+                    FROM daily_sets d WHERE i.id = ANY (d.item_ids) AND d.day <= $1) s
          WHERE gold_answer IS NOT NULL AND ",
         approved!(),
         "
-           AND (SELECT count(*) FROM daily_sets d
-                WHERE i.id = ANY (d.item_ids) AND d.day <= $1) < $2
+           AND (s.shown = 0
+                -- A run of showings with no gap, up to and including $1.
+                OR (s.shown < $2 AND s.last = $1 AND s.first = $1 - (s.shown::int - 1)))
          ORDER BY item_key"
     ))
     .bind(before)
@@ -397,6 +407,24 @@ pub async fn hit_rate_limit(
     .await
 }
 
+/// The window's hits so far, without counting one.
+pub async fn rate_limit_hits(
+    pool: &PgPool,
+    scope: &str,
+    key: &[u8],
+    window_start: DateTime<Utc>,
+) -> Result<i32, Error> {
+    let hits = sqlx::query_scalar(
+        "SELECT hits FROM rate_limits WHERE scope = $1 AND key = $2 AND window_start = $3",
+    )
+    .bind(scope)
+    .bind(key)
+    .bind(window_start)
+    .fetch_optional(pool)
+    .await?;
+    Ok(hits.unwrap_or(0))
+}
+
 /// Deletes rate-limit windows that started before `before`.
 pub async fn purge_rate_limits(pool: &PgPool, before: DateTime<Utc>) -> Result<u64, Error> {
     let result = sqlx::query("DELETE FROM rate_limits WHERE window_start < $1")
@@ -474,6 +502,24 @@ pub async fn results_out(pool: &PgPool, day: NaiveDate) -> Result<bool, Error> {
         .bind(day)
         .fetch_one(pool)
         .await
+}
+
+/// Those of `item_ids` in a set for `from` or any later day: still in play,
+/// so nothing about how they were answered may be shown yet.
+pub async fn in_play(
+    pool: &PgPool,
+    item_ids: &[Uuid],
+    from: NaiveDate,
+) -> Result<Vec<Uuid>, Error> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT k.id FROM daily_sets d, unnest(d.item_ids) AS k(id)
+         WHERE d.day >= $2 AND k.id = ANY ($1)
+         ORDER BY k.id",
+    )
+    .bind(item_ids)
+    .bind(from)
+    .fetch_all(pool)
+    .await
 }
 
 /// What the scorer decided about one item.
@@ -591,17 +637,34 @@ pub async fn overtime_answered(pool: &PgPool, player_id: Uuid) -> Result<i64, Er
 
 // -- ranks and the leaderboard ------------------------------------------------
 
+/// SQL true when item `c.item_id` has left play: it isn't in any set from the
+/// latest scoring run's day on (today's set, or tomorrow's if it's out
+/// already). An item still in play can't count towards anyone's record yet:
+/// a "right" ticking up the morning after would tell its answer to whoever
+/// answered nothing else, while the card can still be answered. Gold that
+/// runs on and a carry-over wait alike, so neither stands out.
+macro_rules! out_of_play {
+    () => {
+        "NOT EXISTS (SELECT 1 FROM daily_sets d
+                     WHERE c.item_id = ANY (d.item_ids)
+                       AND d.day >= (SELECT max(day) FROM scoring_runs))"
+    };
+}
+
 /// Days completed, and answers on settled items (and how many matched).
 pub async fn player_record(pool: &PgPool, player_id: Uuid) -> Result<(i64, i64, i64), Error> {
-    let row = sqlx::query(
+    let row = sqlx::query(concat!(
         "SELECT
            (SELECT count(*) FROM player_days WHERE player_id = $1 AND completed) AS days,
            count(c.item_id) AS scored,
            count(c.item_id) FILTER (WHERE v.answer = c.label) AS right_answers
          FROM votes v
          JOIN consensus c ON c.item_id = v.item_id AND c.status = 'settled' AND c.label IS NOT NULL
-         WHERE v.player_id = $1",
-    )
+           AND ",
+        out_of_play!(),
+        "
+         WHERE v.player_id = $1"
+    ))
     .bind(player_id)
     .fetch_one(pool)
     .await?;
@@ -620,16 +683,19 @@ pub async fn weekly_standings(
     since: NaiveDate,
     until: NaiveDate,
 ) -> Result<Vec<(String, i64, i64, bool)>, Error> {
-    let rows = sqlx::query(
+    let rows = sqlx::query(concat!(
         "SELECT p.handle, p.flags <> '{}'::jsonb AS flagged,
                 count(c.item_id) AS scored,
                 count(c.item_id) FILTER (WHERE v.answer = c.label) AS right_answers
          FROM players p
          JOIN votes v ON v.player_id = p.id AND v.day BETWEEN $1 AND $2
          JOIN consensus c ON c.item_id = v.item_id AND c.status = 'settled' AND c.label IS NOT NULL
+           AND ",
+        out_of_play!(),
+        "
          WHERE p.handle IS NOT NULL
-         GROUP BY p.id",
-    )
+         GROUP BY p.id"
+    ))
     .bind(since)
     .bind(until)
     .fetch_all(pool)
@@ -688,7 +754,7 @@ pub async fn cache_leaderboard(
 /// (handle, days played, settled answers, matching answers) for every player
 /// with a handle: what the board needs to put each one in a rank tier.
 pub async fn handle_records(pool: &PgPool) -> Result<Vec<(String, i64, i64, i64)>, Error> {
-    let rows = sqlx::query(
+    let rows = sqlx::query(concat!(
         "SELECT p.handle,
                 (SELECT count(*) FROM player_days d WHERE d.player_id = p.id AND d.completed) AS days,
                 count(c.item_id) AS scored,
@@ -696,9 +762,12 @@ pub async fn handle_records(pool: &PgPool) -> Result<Vec<(String, i64, i64, i64)
          FROM players p
          LEFT JOIN votes v ON v.player_id = p.id
          LEFT JOIN consensus c ON c.item_id = v.item_id AND c.status = 'settled' AND c.label IS NOT NULL
+           AND ",
+        out_of_play!(),
+        "
          WHERE p.handle IS NOT NULL
-         GROUP BY p.id",
-    )
+         GROUP BY p.id"
+    ))
     .fetch_all(pool)
     .await?;
     rows.iter()
