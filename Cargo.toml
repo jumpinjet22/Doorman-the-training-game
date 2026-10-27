@@ -14,7 +14,7 @@ dorman-testkit = { path = "crates/testkit" }
 anyhow = "1"
 axum = "0.8"
 axum-extra = { version = "0.10", features = ["cookie-signed"] }
-askama = "0.12"
+askama = "0.16"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
