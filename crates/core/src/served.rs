@@ -53,43 +53,54 @@ pub fn served_at(key: &[u8], token: &str, item: &str, viewer: &str) -> Option<i6
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
 
-    const KEY: &[u8] = b"a key a key a key a key";
-
-    #[test]
-    fn a_token_gives_back_its_time_for_its_item_and_viewer_only() {
-        let token = sign(KEY, "item", "player", 1_700_000_000_123);
-        assert_eq!(
-            served_at(KEY, &token, "item", "player"),
-            Some(1_700_000_000_123)
-        );
-        assert_eq!(served_at(KEY, &token, "other", "player"), None);
-        assert_eq!(served_at(KEY, &token, "item", ""), None);
-        assert_eq!(served_at(b"another key", &token, "item", "player"), None);
+    // Keys are generated, never written into the source: the property holds
+    // for any key, and a literal one reads as a hard-coded secret.
+    fn keys() -> impl Strategy<Value = (Vec<u8>, Vec<u8>)> {
+        (
+            proptest::collection::vec(any::<u8>(), 16..64),
+            proptest::collection::vec(any::<u8>(), 16..64),
+        )
+            .prop_filter("two different keys", |(a, b)| a != b)
     }
 
-    #[test]
-    fn a_changed_time_or_junk_is_refused() {
-        let token = sign(KEY, "item", "", 1000);
-        let (_, tag) = token.split_once('.').unwrap();
-        assert_eq!(served_at(KEY, &format!("1.{tag}"), "item", ""), None);
-        for junk in [
-            "",
-            "1000",
-            "1000.",
-            "x.y",
-            "1000.zz",
-            "1000.abc",
-            &token[..10],
-        ] {
-            assert_eq!(served_at(KEY, junk, "item", ""), None);
+    proptest! {
+        #[test]
+        fn a_token_gives_back_its_time_for_its_item_and_viewer_only(
+            (key, other) in keys(), ms in any::<i64>(),
+        ) {
+            let token = sign(&key, "item", "player", ms);
+            prop_assert_eq!(served_at(&key, &token, "item", "player"), Some(ms));
+            prop_assert_eq!(served_at(&key, &token, "other", "player"), None);
+            prop_assert_eq!(served_at(&key, &token, "item", ""), None);
+            prop_assert_eq!(served_at(&other, &token, "item", "player"), None);
         }
-    }
 
-    #[test]
-    fn fields_cant_slide_into_each_other() {
-        let token = sign(KEY, "ab", "c", 5);
-        assert_eq!(served_at(KEY, &token, "a", "bc"), None);
+        #[test]
+        fn a_changed_time_or_junk_is_refused((key, _) in keys()) {
+            let token = sign(&key, "item", "", 1000);
+            let (_, tag) = token.split_once('.').unwrap();
+            prop_assert_eq!(served_at(&key, &format!("1.{tag}"), "item", ""), None);
+            for junk in [
+                "",
+                "1000",
+                "1000.",
+                "x.y",
+                "1000.zz",
+                "1000.abc",
+                &token[..10],
+            ] {
+                prop_assert_eq!(served_at(&key, junk, "item", ""), None);
+            }
+        }
+
+        #[test]
+        fn fields_cant_slide_into_each_other((key, _) in keys()) {
+            let token = sign(&key, "ab", "c", 5);
+            prop_assert_eq!(served_at(&key, &token, "a", "bc"), None);
+        }
     }
 }
