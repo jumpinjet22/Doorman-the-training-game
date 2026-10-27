@@ -75,6 +75,7 @@ document.querySelectorAll("form.vote").forEach((form) => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          overtime: Boolean(form.elements.overtime),
           item_id: form.elements.item_id.value,
           answer: button.value,
           ms_to_answer: Math.round(performance.now() - shownAt),
@@ -88,7 +89,8 @@ document.querySelectorAll("form.vote").forEach((form) => {
     if (!res.ok) { fail(MESSAGES[res.status] ?? "Couldn't save that one."); return; }
     const { remaining, split } = await res.json();
     renderBars(box, split, button.value);
-    next.textContent = remaining === 0 ? "See your results" : "Next card";
+    // Overtime has no end to count down to; its link stays as it is.
+    if (remaining !== null) next.textContent = remaining === 0 ? "See your results" : "Next card";
     next.hidden = false;
     next.focus();
   });

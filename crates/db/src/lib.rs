@@ -109,8 +109,24 @@ fn knock_keys(rows: &[sqlx::postgres::PgRow]) -> Result<Vec<String>, Error> {
 const APPROVED: &str =
     "EXISTS (SELECT 1 FROM batches b WHERE b.name = i.batch AND b.status = 'approved')";
 
-/// Only items from approved batches are candidates.
+/// How many daily sets a gold item is shown in before it's retired. Gold
+/// that keeps coming back is gold players can learn to recognise; five
+/// showings lets an item measure five fresh waves of players, and with three
+/// gold a day a pool of 30 lasts 50 days before it needs topping up.
+pub const GOLD_SHOWINGS: i64 = 5;
+
+/// Only items from approved batches are candidates, and gold retires after
+/// `GOLD_SHOWINGS` days in a set.
 pub async fn daily_pools(pool: &PgPool, before: NaiveDate) -> Result<DailyPools, Error> {
+    daily_pools_retiring(pool, before, GOLD_SHOWINGS).await
+}
+
+/// `daily_pools`, retiring gold after `gold_showings` sets up to `before`.
+pub async fn daily_pools_retiring(
+    pool: &PgPool,
+    before: NaiveDate,
+    gold_showings: i64,
+) -> Result<DailyPools, Error> {
     let new = sqlx::query(&format!(
         "SELECT knock_key FROM items i
          WHERE gold_answer IS NULL AND {APPROVED}
@@ -122,8 +138,12 @@ pub async fn daily_pools(pool: &PgPool, before: NaiveDate) -> Result<DailyPools,
     let gold = sqlx::query(&format!(
         "SELECT knock_key FROM items i
          WHERE gold_answer IS NOT NULL AND {APPROVED}
+           AND (SELECT count(*) FROM daily_sets d
+                WHERE i.id = ANY (d.item_ids) AND d.day <= $1) < $2
          ORDER BY knock_key"
     ))
+    .bind(before)
+    .bind(gold_showings)
     .fetch_all(pool)
     .await?;
     let carry_over = sqlx::query(&format!(
@@ -431,4 +451,157 @@ pub async fn verdicts(pool: &PgPool, item_ids: &[Uuid]) -> Result<HashMap<Uuid, 
             ))
         })
         .collect()
+}
+
+// -- overtime -----------------------------------------------------------------
+
+/// SQL true when item `i` can be served to player $1 in Overtime on day $2:
+/// approved, already shown in an earlier daily set (so Overtime never
+/// previews tomorrow's items), not in today's set, and not yet answered by
+/// them. Gold is served like anything else, so Overtime can't sort it out.
+const OVERTIME: &str = "{APPROVED}
+    AND EXISTS (SELECT 1 FROM daily_sets d WHERE i.id = ANY (d.item_ids) AND d.day < $2)
+    AND NOT EXISTS (SELECT 1 FROM daily_sets d WHERE i.id = ANY (d.item_ids) AND d.day = $2)
+    AND NOT EXISTS (SELECT 1 FROM votes v WHERE v.item_id = i.id AND v.player_id = $1)";
+
+fn overtime_condition() -> String {
+    OVERTIME.replace("{APPROVED}", APPROVED)
+}
+
+/// The next Overtime item for a player: the one with the least total weight
+/// behind it, ties broken in an order of the player's own.
+pub async fn overtime_next(
+    pool: &PgPool,
+    player_id: Uuid,
+    today: NaiveDate,
+) -> Result<Option<StoredItem>, Error> {
+    let row = sqlx::query(&format!(
+        "SELECT i.id, i.knock_key, i.payload FROM items i
+         LEFT JOIN consensus c ON c.item_id = i.id
+         WHERE {}
+         ORDER BY coalesce(c.total_weight, 0), md5(i.id::text || $1::text)
+         LIMIT 1",
+        overtime_condition()
+    ))
+    .bind(player_id)
+    .bind(today)
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(stored_item).transpose()
+}
+
+/// The item, if the player may answer it in Overtime today.
+pub async fn overtime_item(
+    pool: &PgPool,
+    player_id: Uuid,
+    today: NaiveDate,
+    item_id: Uuid,
+) -> Result<Option<StoredItem>, Error> {
+    let row = sqlx::query(&format!(
+        "SELECT i.id, i.knock_key, i.payload FROM items i WHERE i.id = $3 AND {}",
+        overtime_condition()
+    ))
+    .bind(player_id)
+    .bind(today)
+    .bind(item_id)
+    .fetch_optional(pool)
+    .await?;
+    row.as_ref().map(stored_item).transpose()
+}
+
+/// An item by id, whatever day it was shown.
+pub async fn item(pool: &PgPool, item_id: Uuid) -> Result<Option<StoredItem>, Error> {
+    let row = sqlx::query("SELECT id, knock_key, payload FROM items WHERE id = $1")
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await?;
+    row.as_ref().map(stored_item).transpose()
+}
+
+/// How many Overtime answers the player has given.
+pub async fn overtime_answered(pool: &PgPool, player_id: Uuid) -> Result<i64, Error> {
+    sqlx::query_scalar("SELECT count(*) FROM votes WHERE player_id = $1 AND day IS NULL")
+        .bind(player_id)
+        .fetch_one(pool)
+        .await
+}
+
+// -- ranks and the leaderboard ------------------------------------------------
+
+/// Days completed, and answers on settled items (and how many matched).
+pub async fn player_record(pool: &PgPool, player_id: Uuid) -> Result<(i64, i64, i64), Error> {
+    let row = sqlx::query(
+        "SELECT
+           (SELECT count(*) FROM player_days WHERE player_id = $1 AND completed) AS days,
+           count(c.item_id) AS scored,
+           count(c.item_id) FILTER (WHERE v.answer = c.label) AS right_answers
+         FROM votes v
+         JOIN consensus c ON c.item_id = v.item_id AND c.status = 'settled' AND c.label IS NOT NULL
+         WHERE v.player_id = $1",
+    )
+    .bind(player_id)
+    .fetch_one(pool)
+    .await?;
+    Ok((
+        row.try_get("days")?,
+        row.try_get("scored")?,
+        row.try_get("right_answers")?,
+    ))
+}
+
+/// One row per player with a handle: their daily answers from `since` to
+/// `until` on items since settled, how many matched, and whether the scorer
+/// has flagged them.
+pub async fn weekly_standings(
+    pool: &PgPool,
+    since: NaiveDate,
+    until: NaiveDate,
+) -> Result<Vec<(String, i64, i64, bool)>, Error> {
+    let rows = sqlx::query(
+        "SELECT p.handle, p.flags <> '{}'::jsonb AS flagged,
+                count(c.item_id) AS scored,
+                count(c.item_id) FILTER (WHERE v.answer = c.label) AS right_answers
+         FROM players p
+         JOIN votes v ON v.player_id = p.id AND v.day BETWEEN $1 AND $2
+         JOIN consensus c ON c.item_id = v.item_id AND c.status = 'settled' AND c.label IS NOT NULL
+         WHERE p.handle IS NOT NULL
+         GROUP BY p.id",
+    )
+    .bind(since)
+    .bind(until)
+    .fetch_all(pool)
+    .await?;
+    rows.iter()
+        .map(|row| {
+            Ok((
+                row.try_get("handle")?,
+                row.try_get("scored")?,
+                row.try_get("right_answers")?,
+                row.try_get("flagged")?,
+            ))
+        })
+        .collect()
+}
+
+pub async fn handle(pool: &PgPool, player_id: Uuid) -> Result<Option<String>, Error> {
+    sqlx::query_scalar("SELECT handle FROM players WHERE id = $1")
+        .bind(player_id)
+        .fetch_optional(pool)
+        .await
+        .map(Option::flatten)
+}
+
+/// Sets a player's handle. Returns false if another player has it already,
+/// in any case.
+pub async fn set_handle(pool: &PgPool, player_id: Uuid, handle: &str) -> Result<bool, Error> {
+    let result = sqlx::query("UPDATE players SET handle = $2 WHERE id = $1")
+        .bind(player_id)
+        .bind(handle)
+        .execute(pool)
+        .await;
+    match result {
+        Ok(_) => Ok(true),
+        Err(Error::Database(err)) if err.is_unique_violation() => Ok(false),
+        Err(err) => Err(err),
+    }
 }

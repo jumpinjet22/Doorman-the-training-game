@@ -3,6 +3,7 @@
 {% endmacro %}
 
 {% macro bars(list) %}
+{% if !list.is_empty() %}
 <ul class="bars">
   {% for bar in list.iter() %}
   <li{% if bar.mine %} class="mine"{% endif %}>
@@ -12,6 +13,7 @@
   </li>
   {% endfor %}
 </ul>
+{% endif %}
 {% endmacro %}
 
 {% macro scene(item) %}

@@ -40,6 +40,9 @@ enum Command {
     Daily {
         #[arg(long)]
         day: Option<NaiveDate>,
+        /// Retire a gold item after this many daily sets.
+        #[arg(long, env = "DORMAN_GOLD_SHOWINGS", default_value_t = dorman_db::GOLD_SHOWINGS)]
+        gold_showings: i64,
     },
 }
 
@@ -98,10 +101,10 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Command::Daily { day } => {
+        Command::Daily { day, gold_showings } => {
             let day = day.unwrap_or_else(|| Utc::now().date_naive() + Days::new(1));
             let yesterday = day - Days::new(1);
-            let pools = dorman_db::daily_pools(&pool, yesterday).await?;
+            let pools = dorman_db::daily_pools_retiring(&pool, yesterday, gold_showings).await?;
             let plan = DailyPlan::default();
             let keys = pick_daily_set(
                 &day.to_string(),
@@ -121,6 +124,9 @@ async fn main() -> Result<()> {
                 pools.gold.len(),
                 pools.carry_over.len()
             );
+            if let Some(warning) = gold_warning(pools.gold.len(), plan.gold) {
+                println!("{warning}");
+            }
             if keys.len() < plan.total() {
                 println!(
                     "Warning: short of the planned {}; load more data.",
@@ -130,6 +136,18 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A warning when gold is running out: retired gold doesn't come back, so a
+/// pool that won't last the week needs a batch with known answers loaded.
+fn gold_warning(available: usize, per_day: usize) -> Option<String> {
+    let week = per_day * 7;
+    (available < week).then(|| {
+        format!(
+            "Warning: only {available} gold items left in rotation (a week takes {week}); \
+             load and approve a batch with known answers."
+        )
+    })
 }
 
 /// Everything a reviewer needs to skim a batch: each item as a player would
@@ -192,6 +210,14 @@ mod tests {
     use super::*;
 
     const EXAMPLE: &str = include_str!("../../../fixtures/batch.example.json");
+
+    #[test]
+    fn a_short_gold_pool_warns_before_it_runs_out() {
+        assert_eq!(gold_warning(21, 3), None);
+        let warning = gold_warning(20, 3).unwrap();
+        assert!(warning.contains("only 20 gold items left"));
+        assert!(gold_warning(0, 3).is_some());
+    }
 
     #[test]
     fn a_review_shows_every_item_in_full() {

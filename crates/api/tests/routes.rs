@@ -515,6 +515,8 @@ async fn no_response_leaks_answers_or_judge_data(pool: PgPool) {
     bodies.push(text(refused).await);
     bodies.push(h.get("/results", Some(&cookie)).await.2);
     bodies.push(h.get("/about", None).await.2);
+    bodies.push(h.get("/leaderboard", None).await.2);
+    bodies.push(h.get("/overtime", Some(&cookie)).await.2);
     // Yesterday, fully scored, with every item decided on.
     for item in &items {
         let answer = valid_answer(item);
@@ -1221,78 +1223,6 @@ async fn results_wait_for_the_last_vote(pool: PgPool) {
     assert_eq!(h.get("/", Some(&cookie)).await.2, page);
 }
 
-/// What `items[n]`'s first-choice answer scores once `decide` has run.
-fn expected_square(item: &StoredItem, settled: Option<&str>, split_share: f64) -> char {
-    let answer = valid_answer(item);
-    if let Some(gold) = item.item.gold_answer() {
-        return if answer == gold { '🟩' } else { '🟥' };
-    }
-    match settled {
-        None => '⬜',
-        Some(label) if label == answer => '🟩',
-        Some(_) if split_share >= 0.25 => '🟨',
-        Some(_) => '🟥',
-    }
-}
-
-#[sqlx::test(migrations = "../db/migrations")]
-async fn the_card_fills_in_once_the_night_run_is_in(pool: PgPool) {
-    let h = Harness::new(pool);
-    let items = seed_day(&h.pool, day(TODAY)).await;
-    let cookie = h.play_all(&items).await;
-    let open: Vec<&StoredItem> = items
-        .iter()
-        .filter(|i| i.item.gold_answer().is_none())
-        .collect();
-    let (right, close, disputed) = (open[0], open[1], open[2]);
-    let mine = |item: &StoredItem| valid_answer(item);
-    h.verdict(
-        right,
-        "settled",
-        Some(&mine(right)),
-        json!({ mine(right): 4.0, "x": 1.0 }),
-    )
-    .await;
-    h.verdict(
-        close,
-        "settled",
-        Some("x"),
-        json!({ "x": 3.0, mine(close): 1.5 }),
-    )
-    .await;
-    h.verdict(
-        disputed,
-        "disputed",
-        None,
-        json!({ mine(disputed): 1.0, "x": 1.0 }),
-    )
-    .await;
-
-    // Scored during the day doesn't count yet.
-    h.scored(TODAY).await;
-    let (_, _, page) = h.get("/results", Some(&cookie)).await;
-    assert!(page.contains(&"⬜".repeat(items.len())));
-
-    let expected: String = items
-        .iter()
-        .map(|item| match item.id {
-            id if id == right.id => expected_square(item, Some(&mine(item)), 1.0),
-            id if id == close.id => expected_square(item, Some("x"), 1.5 / 4.5),
-            id if id == disputed.id => expected_square(item, None, 0.0),
-            _ => expected_square(item, None, 0.0),
-        })
-        .collect();
-    assert!(expected.contains('🟨') && expected.contains('🟩') && expected.contains('⬜'));
-
-    h.clock.advance(Duration::days(1));
-    h.scored("2026-10-28").await;
-    let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
-    assert!(
-        page.contains(&format!("🚪 #3  {expected}")),
-        "want {expected}: {page}"
-    );
-}
-
 #[sqlx::test(migrations = "../db/migrations")]
 async fn a_streak_counts_days_in_a_row_and_a_missed_day_resets_it(pool: PgPool) {
     let h = Harness::new(pool);
@@ -1327,107 +1257,6 @@ async fn a_streak_counts_days_in_a_row_and_a_missed_day_resets_it(pool: PgPool) 
         page.contains("🚪 #6  ⬜⬜</pre>"),
         "the streak starts over: {page}"
     );
-}
-
-#[sqlx::test(migrations = "../db/migrations")]
-async fn yesterday_waits_for_the_night_run_then_shows_the_weighted_split(pool: PgPool) {
-    let h = Harness::new(pool);
-    let (_, _, page) = h.get("/yesterday", None).await;
-    assert!(page.contains("There was no game yesterday."));
-
-    let items = seed_day(&h.pool, day(TODAY)).await;
-    let cookie = h.play_all(&items).await;
-    let open: Vec<&StoredItem> = items
-        .iter()
-        .filter(|i| i.item.gold_answer().is_none())
-        .collect();
-    let mine = valid_answer(open[0]);
-    h.verdict(
-        open[0],
-        "settled",
-        Some(&mine),
-        json!({ mine.clone(): 3.0, "zzz-unknown-key": 1.0 }),
-    )
-    .await;
-    h.verdict(open[1], "disputed", None, json!({ "x": 1.0 }))
-        .await;
-    h.verdict(open[2], "open", None, json!({})).await;
-
-    h.clock.advance(Duration::days(1));
-    let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
-    assert!(page.contains("Results come out the morning after each game"));
-    assert!(!page.contains(r#"class="result""#));
-
-    h.scored("2026-10-28").await;
-    let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
-    assert!(page.contains("Day 3"), "yesterday's number");
-    assert_eq!(
-        page.matches(r#"class="result""#).count(),
-        3,
-        "only items the crowd decided"
-    );
-    let BatchItem::Intent(_) = &open[0].item else {
-        panic!()
-    };
-    let label = dorman_api::views::intent_label(&mine);
-    assert!(page.contains(&format!("The crowd settled on: {label}.")));
-    assert!(page.contains("75%") && page.contains("25%"));
-    assert!(
-        page.contains("Something else"),
-        "an unknown answer gets no raw name"
-    );
-    assert!(!page.contains("zzz-unknown-key"));
-    assert!(page.contains("Too close to call"));
-    assert!(page.contains("Not enough votes yet"));
-    for item in items.iter().filter(|i| i.item.gold_answer().is_some()) {
-        assert!(
-            !page.contains(&line(item)),
-            "an item with a known answer is shown"
-        );
-    }
-    // Someone who didn't play yesterday sees the breakdown but no card.
-    let (_, _, page) = h.get("/yesterday", None).await;
-    assert!(!page.contains("Your card"));
-    assert_eq!(page.matches(r#"class="result""#).count(), 3);
-}
-
-#[sqlx::test(migrations = "../db/migrations")]
-async fn yesterdays_pair_answers_read_as_replies(pool: PgPool) {
-    let h = Harness::new(pool);
-    let mut batch = dorman_testkit::example_batch();
-    batch.items.retain(|i| matches!(i, BatchItem::Pair(_)));
-    let BatchItem::Pair(pair) = &mut batch.items[0] else {
-        panic!()
-    };
-    pair.gold_answer = None;
-    let replies: Vec<String> = pair.replies.iter().map(|r| r.knock_key.clone()).collect();
-    let texts: Vec<String> = pair.replies.iter().map(|r| r.text.clone()).collect();
-    dorman_testkit::load_pending(&h.pool, &batch).await;
-    dorman_testkit::approve(&h.pool, &batch.batch).await;
-    let items = dorman_testkit::publish(
-        &h.pool,
-        day(TODAY),
-        &[batch.items[0].knock_key().to_string()],
-    )
-    .await;
-    h.verdict(
-        &items[0],
-        "settled",
-        Some(&replies[1]),
-        json!({ replies[0].clone(): 1.0, replies[1].clone(): 2.0, "both_bad": 1.0 }),
-    )
-    .await;
-    h.clock.advance(Duration::days(1));
-    h.scored("2026-10-28").await;
-    let (_, _, page) = h.get("/yesterday", None).await;
-    assert!(page.contains(&format!(
-        "The crowd settled on: B: \u{201c}{}\u{201d}.",
-        texts[1]
-    )));
-    assert!(page.contains("Both bad"));
-    for key in &replies {
-        assert!(!page.contains(key.as_str()), "a reply's key is on the page");
-    }
 }
 
 #[sqlx::test(migrations = "../db/migrations")]
@@ -1479,27 +1308,556 @@ async fn a_day_of_cards_already_answered_still_counts_for_the_streak(pool: PgPoo
     assert_eq!(count(&h.pool, "votes").await, items.len() as i64);
 }
 
+// -- gold that can't be told apart --------------------------------------------------
+
+/// What the scorer writes for every item, gold included: settled on `label`
+/// with `split`, or open.
+async fn decide(h: &Harness, item: &StoredItem, label: Option<&str>, split: Value) {
+    let status = if label.is_some() { "settled" } else { "open" };
+    h.verdict(item, status, label, split).await;
+}
+
+/// The item ids a page lists as results, in order.
+fn listed(page: &str) -> Vec<String> {
+    page.match_indices(r#"<li class="result" data-item=""#)
+        .map(|(i, m)| page[i + m.len()..i + m.len() + 36].to_string())
+        .collect()
+}
+
 #[sqlx::test(migrations = "../db/migrations")]
-async fn a_carry_over_keeps_its_split_hidden_while_it_is_back_in_play(pool: PgPool) {
+async fn the_card_fills_in_the_same_way_for_every_item(pool: PgPool) {
     let h = Harness::new(pool);
     let items = seed_day(&h.pool, day(TODAY)).await;
     let cookie = h.play_all(&items).await;
-    let open: Vec<&StoredItem> = items
-        .iter()
-        .filter(|i| i.item.gold_answer().is_none())
-        .collect();
-    h.verdict(open[0], "disputed", None, json!({ "a": 1.0, "b": 1.0 }))
-        .await;
-    h.verdict(open[1], "disputed", None, json!({ "a": 3.0, "b": 1.0 }))
-        .await;
+    // Every item, gold or not, settled one of three ways against our answer.
+    let mut expected = String::new();
+    for (n, item) in items.iter().enumerate() {
+        let mine = valid_answer(item);
+        let (label, split, square) = match n % 3 {
+            0 => (mine.clone(), json!({ mine.clone(): 4.0, "x": 1.0 }), '🟩'),
+            1 => (
+                "x".to_string(),
+                json!({ "x": 3.0, mine.clone(): 1.5 }),
+                '🟨',
+            ),
+            _ => (
+                "x".to_string(),
+                json!({ "x": 9.0, mine.clone(): 1.0 }),
+                '🟥',
+            ),
+        };
+        decide(&h, item, Some(&label), split).await;
+        expected.push(square);
+    }
+    assert!(items.iter().any(|i| i.item.gold_answer().is_some()));
+
+    // Scored during the day doesn't count yet.
+    h.scored(TODAY).await;
+    let (_, _, page) = h.get("/results", Some(&cookie)).await;
+    assert!(page.contains(&"⬜".repeat(items.len())));
+
     h.clock.advance(Duration::days(1));
     h.scored("2026-10-28").await;
-    // open[0] is carried over into today.
-    dorman_testkit::publish(&h.pool, day("2026-10-28"), &[open[0].knock_key.clone()]).await;
-
     let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
-    assert_eq!(page.matches(r#"class="result""#).count(), 2);
-    assert!(page.contains("back in today&#x27;s game"));
-    assert!(page.contains("75%"), "the other item still shows its split");
-    assert!(!page.contains("50%"), "the carry-over's split is hidden");
+    assert!(
+        page.contains(&format!("🚪 #3  {expected}")),
+        "want {expected}: {page}"
+    );
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn the_card_cant_single_out_gold(pool: PgPool) {
+    let h = Harness::new(pool);
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let cookie = h.play_all(&items).await;
+    // No rows at all: gold and non-gold alike stay pending.
+    h.clock.advance(Duration::days(1));
+    h.scored("2026-10-28").await;
+    let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
+    assert!(
+        page.contains(&format!("🚪 #3  {}", "⬜".repeat(items.len()))),
+        "{page}"
+    );
+
+    // Every item settled on our answer, except whatever's back today, which
+    // stays pending whether it's gold or a carry-over.
+    for item in &items {
+        let mine = valid_answer(item);
+        decide(&h, item, Some(&mine), json!({ mine.clone(): 1.0 })).await;
+    }
+    let gold = items
+        .iter()
+        .position(|i| i.item.gold_answer().is_some())
+        .unwrap();
+    let plain = items
+        .iter()
+        .position(|i| i.item.gold_answer().is_none())
+        .unwrap();
+    dorman_testkit::publish(
+        &h.pool,
+        day("2026-10-28"),
+        &[
+            items[gold].knock_key.clone(),
+            items[plain].knock_key.clone(),
+        ],
+    )
+    .await;
+    let expected: String = (0..items.len())
+        .map(|n| {
+            if n == gold || n == plain {
+                '⬜'
+            } else {
+                '🟩'
+            }
+        })
+        .collect();
+    let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
+    assert!(
+        page.contains(&format!("🚪 #3  {expected}")),
+        "want {expected}: {page}"
+    );
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn yesterday_cant_tell_gold_from_the_rest(pool: PgPool) {
+    let h = Harness::new(pool);
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let cookie = h.play_all(&items).await;
+    for item in &items {
+        let mine = valid_answer(item);
+        decide(
+            &h,
+            item,
+            Some(&mine),
+            json!({ mine.clone(): 3.0, "x": 1.0 }),
+        )
+        .await;
+    }
+    // A gold item and a plain one are both back today.
+    let gold = items
+        .iter()
+        .find(|i| i.item.gold_answer().is_some())
+        .unwrap();
+    let plain = items
+        .iter()
+        .find(|i| i.item.gold_answer().is_none())
+        .unwrap();
+    h.clock.advance(Duration::days(1));
+    h.scored("2026-10-28").await;
+    dorman_testkit::publish(
+        &h.pool,
+        day("2026-10-28"),
+        &[gold.knock_key.clone(), plain.knock_key.clone()],
+    )
+    .await;
+    let expected: Vec<String> = items
+        .iter()
+        .filter(|i| i.id != gold.id && i.id != plain.id)
+        .map(|i| i.id.to_string())
+        .collect();
+
+    for viewer in [Some(cookie.as_str()), None] {
+        let (_, _, page) = h.get("/yesterday", viewer).await;
+        assert_eq!(
+            listed(&page),
+            expected,
+            "yesterday's set minus what's back today"
+        );
+        // Every row reads alike: a settled verdict and bars for a player who
+        // answered, nothing for anyone else.
+        let rows = expected.len();
+        match viewer {
+            Some(_) => {
+                assert_eq!(page.matches("The crowd settled on:").count(), rows);
+                assert_eq!(page.matches(r#"<ul class="bars">"#).count(), rows);
+                assert!(page.contains("75%") && page.contains("25%"));
+            }
+            None => {
+                assert_eq!(
+                    page.matches("You didn&#x27;t answer this one").count(),
+                    rows
+                );
+                assert!(!page.contains(r#"<ul class="bars">"#));
+                assert!(!page.contains("settled on"));
+            }
+        }
+    }
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn yesterday_waits_for_the_night_run_and_never_names_a_raw_answer(pool: PgPool) {
+    let h = Harness::new(pool);
+    let (_, _, page) = h.get("/yesterday", None).await;
+    assert!(page.contains("There was no game yesterday."));
+
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let cookie = h.play_all(&items).await;
+    let mine = valid_answer(&items[1]);
+    decide(
+        &h,
+        &items[1],
+        Some(&mine),
+        json!({ mine.clone(): 3.0, "zzz-unknown-key": 1.0 }),
+    )
+    .await;
+    h.verdict(&items[3], "disputed", None, json!({ "x": 1.0 }))
+        .await;
+    decide(&h, &items[4], None, json!({})).await;
+
+    h.clock.advance(Duration::days(1));
+    let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
+    assert!(page.contains("Results come out the morning after each game"));
+    assert!(listed(&page).is_empty());
+
+    h.scored("2026-10-28").await;
+    let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
+    assert!(page.contains("Day 3"), "yesterday's number");
+    assert_eq!(listed(&page).len(), items.len());
+    let label = dorman_api::views::choice_label(&items[1].item, &mine);
+    assert!(page.contains(&format!(
+        "The crowd settled on: {}.",
+        label.replace('\'', "&#x27;")
+    )));
+    assert!(
+        page.contains("Something else"),
+        "an unknown answer gets no raw name"
+    );
+    assert!(!page.contains("zzz-unknown-key"));
+    assert!(page.contains("Too close to call"));
+    assert!(page.contains("Not enough votes yet"));
+    assert!(page.contains("No votes were counted for this one."));
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn pair_replies_are_shuffled_and_read_as_letters_everywhere(pool: PgPool) {
+    let h = Harness::new(pool);
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let pair = items
+        .iter()
+        .find(|i| matches!(i.item, BatchItem::Pair(_)))
+        .unwrap();
+    let BatchItem::Pair(p) = &pair.item else {
+        unreachable!()
+    };
+    let order = dorman_api::views::reply_order(p);
+    let (a, b) = (order[0], order[1]);
+
+    // The card offers them in that order.
+    let cookie = h
+        .play_all(&items[..items.iter().position(|i| i.id == pair.id).unwrap()])
+        .await;
+    let (_, _, page) = h.get("/", Some(&cookie)).await;
+    assert!(shows_card(&page, pair));
+    let (at_a, at_b) = (
+        page.find(&format!(r#"value="{}""#, a.knock_key)).unwrap(),
+        page.find(&format!(r#"value="{}""#, b.knock_key)).unwrap(),
+    );
+    assert!(at_a < at_b);
+
+    // The live split and the reveal both call them by those letters.
+    let (_, _, body) = h.vote(Some(&cookie), vote_body(pair, &b.knock_key)).await;
+    let body: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(body["split"][0]["label"], "Reply B");
+    h.play_all_as(Some(cookie.clone()), &items).await;
+    decide(
+        &h,
+        pair,
+        Some(&b.knock_key),
+        json!({ a.knock_key.clone(): 1.0, b.knock_key.clone(): 2.0, "both_bad": 1.0 }),
+    )
+    .await;
+    h.clock.advance(Duration::days(1));
+    h.scored("2026-10-28").await;
+    let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
+    let reply = b.text.replace('\'', "&#x27;").replace('"', "&quot;");
+    assert!(
+        page.contains(&format!(
+            "The crowd settled on: B: \u{201c}{reply}\u{201d}."
+        )),
+        "{page}"
+    );
+    assert!(page.contains("Both bad"));
+    for reply in &p.replies {
+        assert!(
+            !page.contains(&format!(">{}<", reply.knock_key)),
+            "a reply's key is shown as text"
+        );
+    }
+}
+
+// -- overtime ---------------------------------------------------------------------
+
+/// Two days of the example batch: half of it yesterday, the rest today.
+async fn yesterday_and_today(h: &Harness) -> (Vec<StoredItem>, Vec<StoredItem>) {
+    let batch = dorman_testkit::load_example(&h.pool).await;
+    let keys: Vec<String> = batch
+        .items
+        .iter()
+        .map(|i| i.knock_key().to_string())
+        .collect();
+    let past = dorman_testkit::publish(&h.pool, day("2026-10-26"), &keys[..3]).await;
+    let today = dorman_testkit::publish(&h.pool, day(TODAY), &keys[3..]).await;
+    (past, today)
+}
+
+fn overtime_body(item: &StoredItem) -> Value {
+    let mut body = vote_body(item, &valid_answer(item));
+    body["overtime"] = json!(true);
+    body
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn overtime_opens_only_once_today_is_done(pool: PgPool) {
+    let h = Harness::new(pool);
+    let (past, today) = yesterday_and_today(&h).await;
+    let see_other = |r: &(StatusCode, Option<String>, String)| r.0 == StatusCode::SEE_OTHER;
+    assert!(see_other(&h.get("/overtime", None).await));
+    let (status, cookie, _) = h.vote(None, overtime_body(&past[0])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "no player, no Overtime");
+    assert!(cookie.is_none());
+
+    let cookie = h.play_all(&today[..1]).await;
+    assert!(see_other(&h.get("/overtime", Some(&cookie)).await));
+    let (status, _, _) = h.vote(Some(&cookie), overtime_body(&past[0])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "today isn't finished");
+
+    h.play_all_as(Some(cookie.clone()), &today).await;
+    let (status, _, page) = h.get("/overtime", Some(&cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(page.contains("<h1>Overtime</h1>"));
+    assert!(page.contains(r#"<input type="hidden" name="overtime" value="1">"#));
+    let (_, _, results) = h.get("/", Some(&cookie)).await;
+    assert!(results.contains(r#"<a class="overtime" href="/overtime">"#));
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn overtime_serves_each_past_item_once_and_never_todays(pool: PgPool) {
+    let h = Harness::new(pool);
+    let (past, today) = yesterday_and_today(&h).await;
+    let cookie = h.play_all(&today).await;
+
+    // Today's items aren't Overtime items, and Overtime items aren't today's.
+    let (status, _, _) = h.vote(Some(&cookie), overtime_body(&today[0])).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = h
+        .vote(Some(&cookie), vote_body(&past[0], &valid_answer(&past[0])))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let mut served = Vec::new();
+    loop {
+        let (_, _, page) = h.get("/overtime", Some(&cookie)).await;
+        let Some(item) = past.iter().find(|item| shows_card(&page, item)) else {
+            assert!(
+                page.contains("You&#x27;ve answered everything there is for now."),
+                "{page}"
+            );
+            break;
+        };
+        assert!(!today.iter().any(|t| shows_card(&page, t)));
+        assert!(!served.contains(&item.id), "served twice");
+        served.push(item.id);
+        // Half by fetch, half by form post.
+        if served.len() % 2 == 1 {
+            let (status, _, body) = h.vote(Some(&cookie), overtime_body(item)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(
+                serde_json::from_str::<Value>(&body).unwrap()["remaining"],
+                Value::Null
+            );
+        } else {
+            let (id, answer, token) =
+                (item.id.to_string(), valid_answer(item), h.turnstile.issue());
+            let response = h
+                .form_vote(
+                    Some(&cookie),
+                    &[
+                        ("item_id", &id),
+                        ("answer", &answer),
+                        ("shown_at", "0"),
+                        ("overtime", "1"),
+                        ("cf-turnstile-response", &token),
+                    ],
+                )
+                .await;
+            assert_eq!(
+                response.headers()[header::LOCATION],
+                format!("/overtime?after={id}")
+            );
+            let (_, _, page) = h.get(&format!("/overtime?after={id}"), Some(&cookie)).await;
+            assert!(page.contains(r#"<a class="next" href="/overtime">Next card</a>"#));
+        }
+        let (status, _, _) = h.vote(Some(&cookie), overtime_body(item)).await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "an answered item is done with"
+        );
+    }
+    assert_eq!(served.len(), past.len());
+    let days: Vec<Option<chrono::NaiveDate>> =
+        sqlx::query_scalar("SELECT day FROM votes WHERE item_id = ANY ($1)")
+            .bind(served)
+            .fetch_all(&h.pool)
+            .await
+            .unwrap();
+    assert!(
+        days.iter().all(Option::is_none),
+        "Overtime answers belong to no day"
+    );
+}
+
+// -- ranks, the leaderboard and handles ---------------------------------------------
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn the_results_show_a_rank(pool: PgPool) {
+    let h = Harness::new(pool);
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let cookie = h.play_all(&items).await;
+    let (_, _, page) = h.get("/results", Some(&cookie)).await;
+    assert!(page.contains("Your rank: <strong>Rookie</strong>"));
+    assert!(page.contains(r#"<form class="handle" method="post" action="/handle">"#));
+}
+
+async fn handle_post(h: &Harness, cookie: Option<&str>, handle: &str) -> Response<Body> {
+    let mut request = Request::post("/handle")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::ORIGIN, ORIGIN);
+    if let Some(cookie) = cookie {
+        request = request.header(header::COOKIE, cookie);
+    }
+    let body = serde_urlencoded::to_string([("handle", handle)]).unwrap();
+    h.respond(request.body(Body::from(body)).unwrap()).await
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn a_handle_is_checked_and_unique(pool: PgPool) {
+    let h = Harness::new(pool);
+    let items = seed_day(&h.pool, day(TODAY)).await;
+    let (ada, bob) = (h.play_all(&items).await, h.play_all(&items).await);
+    assert_eq!(
+        handle_post(&h, None, "Ada").await.status(),
+        StatusCode::FORBIDDEN
+    );
+    for bad in ["ab", "a b c", "<script>", "-dash", &"x".repeat(21)] {
+        assert_eq!(
+            handle_post(&h, Some(&ada), bad).await.status(),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{bad}"
+        );
+    }
+    let response = handle_post(&h, Some(&ada), "  Ada_Lovelace ").await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(response.headers()[header::LOCATION], "/leaderboard");
+    assert_eq!(
+        handle_post(&h, Some(&bob), "ada_lovelace").await.status(),
+        StatusCode::CONFLICT
+    );
+    let (_, _, page) = h.get("/results", Some(&ada)).await;
+    assert!(page.contains("You're <strong>Ada_Lovelace</strong>"));
+    // Like any other POST, it needs our Origin.
+    let request = Request::post("/handle")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(header::COOKIE, &bob)
+        .body(Body::from("handle=Bobby"))
+        .unwrap();
+    assert_eq!(h.send(request).await.0, StatusCode::FORBIDDEN);
+}
+
+#[sqlx::test(migrations = "../db/migrations")]
+async fn the_leaderboard_ranks_this_weeks_named_players(pool: PgPool) {
+    let h = Harness::new(pool);
+    let (_, _, page) = h.get("/leaderboard", None).await;
+    assert!(page.contains("Nobody's qualified yet this week."));
+    assert!(
+        page.contains(r#"<time datetime="2026-10-26">"#),
+        "the week starts on Monday"
+    );
+
+    // 24 settled items from this week.
+    let mut batch = dorman_testkit::example_batch();
+    let template = batch
+        .items
+        .iter()
+        .find(|i| matches!(i, BatchItem::Intent(_)))
+        .unwrap()
+        .clone();
+    batch.batch = "board".into();
+    batch.items = (0..24)
+        .map(|n| {
+            let mut item = template.clone();
+            if let BatchItem::Intent(i) = &mut item {
+                i.knock_key = format!("board-{n}");
+                i.gold_answer = None;
+            }
+            item
+        })
+        .collect();
+    dorman_testkit::load_pending(&h.pool, &batch).await;
+    dorman_testkit::approve(&h.pool, "board").await;
+    let keys: Vec<String> = batch
+        .items
+        .iter()
+        .map(|i| i.knock_key().to_string())
+        .collect();
+    let items = dorman_testkit::publish(&h.pool, day("2026-10-26"), &keys).await;
+    for item in &items {
+        decide(&h, item, Some(&valid_answer(item)), json!({})).await;
+    }
+    // (name, answers, right, flagged)
+    for (name, answered, right, flagged) in [
+        ("Bob", 24, 20, false),
+        ("Ada", 24, 20, false),
+        ("Cy", 24, 24, false),
+        ("Dee", 24, 24, true),
+        ("Eve", 19, 19, false),
+        ("", 24, 24, false),
+    ] {
+        let player = dorman_db::create_player(&h.pool).await.unwrap();
+        if !name.is_empty() {
+            dorman_db::set_handle(&h.pool, player, name).await.unwrap();
+        }
+        if flagged {
+            sqlx::query("UPDATE players SET flags = '{\"same_answer\": 0.3}' WHERE id = $1")
+                .bind(player)
+                .execute(&h.pool)
+                .await
+                .unwrap();
+        }
+        for (n, item) in items.iter().take(answered).enumerate() {
+            let answer = if n < right {
+                valid_answer(item)
+            } else {
+                "wrong".to_string()
+            };
+            dorman_db::record_vote(
+                &h.pool,
+                player,
+                item.id,
+                Some(day("2026-10-26")),
+                &answer,
+                3000,
+            )
+            .await
+            .unwrap();
+        }
+    }
+    let (_, _, page) = h.get("/leaderboard", None).await;
+    let rows: Vec<&str> = page.split("<tr><td>").skip(1).collect();
+    let names: Vec<&str> = rows
+        .iter()
+        .map(|r| r.split("</td><td>").nth(1).unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        ["Cy", "Ada", "Bob"],
+        "flagged, unnamed and too-few are left out"
+    );
+    assert!(rows[0].contains("<td>100%</td><td>24</td>"));
+    assert!(rows[1].contains("<td>83%</td><td>24</td>"));
+
+    // Last week's answers don't count this week.
+    h.clock.advance(Duration::days(7));
+    let (_, _, page) = h.get("/leaderboard", None).await;
+    assert!(page.contains("Nobody's qualified yet this week."));
 }

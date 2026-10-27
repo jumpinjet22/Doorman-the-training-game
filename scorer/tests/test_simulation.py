@@ -3,13 +3,15 @@ plan (M3): settled items are right at least 95% of the time, and trolls end
 up with trust of 0.05 or less. A scorer change that breaks either fails CI.
 """
 
+import random
 from datetime import timedelta
 
 import pytest
 
 from dorman_scorer.config import SOFT_LAUNCH, Config
+from dorman_scorer.model import Vote
 from dorman_scorer.scoring import score
-from tests.sim import Crowd, simulate
+from tests.sim import LABELS, Crowd, simulate
 
 pytestmark = pytest.mark.sim
 
@@ -58,6 +60,32 @@ def test_a_noisy_but_honest_crowd_still_settles_most_items() -> None:
     _, _, verdicts, settled, accuracy = _run(Crowd(honest=60, honest_accuracy=0.75, seed=3))
     assert len(settled) >= len(verdicts) * 0.5
     assert accuracy >= 0.95
+
+
+def test_gold_answered_in_overtime_earns_no_trust() -> None:
+    """A farmer trolls their dailies but answers every gold item they can
+    reach in Overtime correctly. Only daily gold counts, so they're muted."""
+    world = simulate(Crowd(honest=20, days=2))
+    rng = random.Random(7)
+    farmer = "farmer"
+    seen = set()
+    for vote in [v for v in world.votes if v.player_id == "honest0"]:
+        item = next(i for i in world.items if i.id == vote.item_id)
+        right = item.gold_answer or world.truth[item.id]
+        # Wrong, but varied and at a human pace, so no behaviour flag trips.
+        ans = rng.choice([label for label in LABELS if label != right])
+        world.votes.append(Vote(farmer, item.id, ans, rng.randint(3000, 9000), rng.randint(0, 3)))
+        seen.add(item.id)
+    overtime_gold = [i for i in world.items if i.gold_answer and i.id not in seen]
+    assert len(overtime_gold) >= 5
+    for item in overtime_gold:
+        world.votes.append(
+            Vote(farmer, item.id, item.gold_answer, rng.randint(3000, 9000), 0, daily=False)
+        )
+
+    players, _ = score(world.items, world.votes, world.today)
+    assert players[farmer].trust <= 0.05, f"the farmer kept trust {players[farmer].trust}"
+    assert players[farmer].flags == {}, "muted by the gold filter, not a behaviour flag"
 
 
 def test_a_brigade_of_new_accounts_cannot_settle_a_wrong_answer() -> None:

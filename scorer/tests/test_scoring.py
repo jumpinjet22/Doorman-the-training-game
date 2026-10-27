@@ -5,7 +5,7 @@ import numpy as np
 from dorman_scorer import config
 from dorman_scorer.brigade import brigaded
 from dorman_scorer.config import Config
-from dorman_scorer.consensus import consensus_file, verdict
+from dorman_scorer.consensus import consensus_file, gold_verdicts, verdict
 from dorman_scorer.dawid_skene import dawid_skene
 from dorman_scorer.flags import behavior_flags
 from dorman_scorer.model import Item, Vote
@@ -251,3 +251,20 @@ def test_pair_posteriors_come_back_as_reply_keys() -> None:
         votes.append(_vote(f"p{p}", target, "xb" if p < 8 else "both_bad"))
     _, [v] = score([*gold, target], votes, TODAY)
     assert v.label == "xb" and v.posterior is not None and v.posterior > 0.9
+
+
+def test_gold_items_read_like_any_settled_item() -> None:
+    gold, plain = _item(1, gold="delivery"), _item(2)
+    votes = [
+        _vote("a", gold, "delivery"),
+        _vote("b", gold, "delivery"),
+        _vote("c", gold, "soliciting"),
+        _vote("a", plain, "delivery"),
+    ]
+    [row] = gold_verdicts([gold, plain], votes, {"a": 1.0, "b": 2.0, "c": 1.0})
+    assert (row.item_id, row.status, row.label) == ("item1", "settled", "delivery")
+    assert row.split == {"delivery": 3.0, "soliciting": 1.0}
+    assert (row.share, row.total_weight) == (0.75, 4.0)
+    # Nobody voted yet: still settled on gold, with nothing behind it.
+    [empty] = gold_verdicts([gold], [], {})
+    assert (empty.status, empty.label, empty.share, empty.split) == ("settled", "delivery", 0.0, {})

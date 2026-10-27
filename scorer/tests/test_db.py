@@ -116,6 +116,17 @@ def test_load_reads_items_votes_and_positions(db_url: str) -> None:
     positions = {v.answer: v.position for v in votes}
     assert positions == {"both_bad": 2, intent["generator_intent"]: 0}
     assert all(timedelta(days=29) < v.account_age < timedelta(days=31) for v in votes)
+    assert all(v.daily for v in votes)
+
+
+def test_overtime_votes_load_as_not_daily(db_url: str) -> None:
+    with psycopg.connect(db_url) as conn:
+        ids = _seed(conn)
+        intent = next(i for i in BATCH["items"] if i["mode"] == "intent")
+        player = _player(conn, [(ids[intent["knock_key"]], intent["generator_intent"])])
+        conn.execute("UPDATE votes SET day = NULL WHERE player_id = %s", (player,))
+        _, votes = db.load(conn)
+    assert [v.daily for v in votes] == [False]
 
 
 def test_main_saves_trust_and_consensus_and_writes_the_export(db_url, tmp_path) -> None:
@@ -137,7 +148,8 @@ def test_main_saves_trust_and_consensus_and_writes_the_export(db_url, tmp_path) 
             conn.execute("SELECT status, count(*) FROM consensus GROUP BY 1").fetchall()
         )
     assert all(t > 0.2 for t in trusts)
-    assert statuses["settled"] == 1
+    gold = [i for i in BATCH["items"] if i["gold_answer"]]
+    assert statuses["settled"] == 1 + len(gold), "gold gets a settled row too"
 
 
 def test_running_twice_gives_the_same_rows(db_url, tmp_path) -> None:
@@ -281,3 +293,26 @@ def test_a_missing_database_url_is_an_error() -> None:
 def test_bad_configuration_is_an_error(env) -> None:
     with pytest.raises(SystemExit):
         main(["--database-url", "postgres://unused"], environ=env)
+
+
+def test_gold_gets_a_settled_row_but_stays_out_of_the_export_and_the_log(db_url, tmp_path) -> None:
+    with psycopg.connect(db_url) as conn:
+        ids = _seed(conn)
+        _crowd(conn, ids)
+    main(_args(db_url, tmp_path))
+
+    gold = {ids[i["knock_key"]]: i["gold_answer"] for i in BATCH["items"] if i["gold_answer"]}
+    with psycopg.connect(db_url) as conn:
+        rows = conn.execute(
+            "SELECT item_id::text, status, label, split FROM consensus WHERE item_id = ANY (%s)",
+            (list(gold),),
+        ).fetchall()
+        [(items, settled)] = conn.execute("SELECT items, settled FROM scoring_runs").fetchall()
+    assert {item_id: (status, label) for item_id, status, label, _ in rows} == {
+        item_id: ("settled", answer) for item_id, answer in gold.items()
+    }
+    assert all(set(split) == {gold[item_id]} for item_id, _, _, split in rows)
+    export = json.loads((tmp_path / "consensus-2026-10-27.json").read_text())
+    gold_keys = {i["knock_key"] for i in BATCH["items"] if i["gold_answer"]}
+    assert not gold_keys & {i["knock_key"] for i in export["items"]}
+    assert (items, settled) == (3, 1), "the run log counts only non-gold items"

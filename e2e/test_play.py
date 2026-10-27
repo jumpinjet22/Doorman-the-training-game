@@ -59,9 +59,28 @@ def _play_out(page: Page) -> int:
 
 
 def _publish(dorman: Dorman, bin_dir: Path, day: str) -> None:
-    """Publishes `day` unless an earlier test already did."""
-    if not dorman.query("SELECT 1 FROM daily_sets WHERE day = %s", day):
-        ingest(bin_dir, dorman.db_url, "daily", "--day", day)
+    """Publishes `day` unless an earlier test already did, from a fresh batch
+    of its own: the example batch is too small to last many days, since gold
+    retires after a few showings."""
+    if dorman.query("SELECT 1 FROM daily_sets WHERE day = %s", day):
+        return
+    batch = json.loads(FIXTURE_BATCH.read_text(encoding="utf-8"))
+    batch["batch"] = f"day-{day}"
+    tag = day.replace("-", "")
+    for item in batch["items"]:
+        if item["mode"] == "pair":
+            for reply in item["replies"]:
+                reply["knock_key"] = f"{tag}{reply['knock_key']}"
+            item["knock_key"] = ":".join(["pair", *(r["knock_key"] for r in item["replies"])])
+            if item["gold_answer"]:
+                item["gold_answer"] = f"{tag}{item['gold_answer']}"
+        else:
+            item["knock_key"] = f"{tag}{item['knock_key']}"
+    path = Path(dorman.clock_file).parent / f"batch-{day}.json"
+    path.write_text(json.dumps(batch), encoding="utf-8")
+    ingest(bin_dir, dorman.db_url, "load", str(path))
+    ingest(bin_dir, dorman.db_url, "approve", batch["batch"])
+    ingest(bin_dir, dorman.db_url, "daily", "--day", day)
 
 
 def _run_scorer(dorman: Dorman, today: str, out: Path) -> None:
@@ -156,14 +175,16 @@ def test_the_next_morning_the_card_fills_in_and_the_streak_is_two(
     total = _play_out(page)
     assert _card_text(page) == f"🚪 #{number}  {'⬜' * total}"
 
-    # The night run, then the next morning.
+    # The night run, then the next morning, before the next set goes up
+    # (anything back in it would stay hidden).
     _run_scorer(dorman, second, tmp_path)
-    _publish(dorman, bin_dir, second)
     dorman.set_clock(f"{second}T08:00:00Z")
     page.goto("/yesterday")
     filled = _card_text(page)
     assert re.fullmatch(rf"🚪 #{number}  [⬜🟩🟨🟥]{{{total}}}", filled), filled
-    assert set(filled) & set("🟩🟨🟥"), "gold answers are scored by morning"
+    assert set(filled) & set("🟩🟨🟥"), "items with known answers are scored by morning"
+
+    _publish(dorman, bin_dir, second)
 
     page.goto("/")
     _play_out(page)
@@ -280,6 +301,10 @@ def test_no_serious_accessibility_violations_on_any_page(sized: Page, dorman: Do
     page.goto("/")
     _play_out(page)
     check("results")
+    page.goto("/overtime")
+    check("overtime, nothing left")
+    page.goto("/leaderboard")
+    check("leaderboard")
     dorman.set_clock("2026-10-28T09:00:00Z")
     page.goto("/")
     check("no game today")
@@ -384,3 +409,42 @@ def test_a_batch_is_played_only_once_reviewed_and_its_markup_stays_text(
     assert page.locator("main script, main img").count() == 0
     assert dialogs == []
     assert page.evaluate("window.__csp") == []
+
+
+def test_from_the_daily_set_into_overtime_and_back(
+    sized: Page, dorman: Dorman, bin_dir: Path
+) -> None:
+    page = sized
+    phone = page.viewport_size["width"] < 600
+    earlier, today = ("2027-01-20", "2027-01-21") if phone else ("2027-01-10", "2027-01-11")
+    _publish(dorman, bin_dir, earlier)
+    _publish(dorman, bin_dir, today)
+    dorman.set_clock(f"{today}T12:00:00Z")
+    page.goto("/overtime")
+    expect(page).to_have_url(re.compile(r"/$"), timeout=5000)  # finish today first
+    _play_out(page)
+
+    untimed = "SELECT count(*) FROM votes WHERE day IS NULL"
+    before = dorman.query(untimed)[0][0]
+    page.get_by_role("link", name="Play Overtime").click()
+    expect(page.get_by_role("heading", name="Overtime")).to_be_visible()
+    assert _serious_violations(page) == []
+    seen = []
+    for _ in range(2):
+        seen.append(_card(page).get_attribute("data-item"))
+        _answer(page)
+        expect(page.locator(".next")).to_have_attribute("href", "/overtime")
+        page.locator(".next").click()
+    assert len(set(seen)) == 2
+
+    def shown(where: str) -> set[str]:
+        sql = f"SELECT DISTINCT unnest(item_ids)::text FROM daily_sets WHERE {where}"
+        return {item for (item,) in dorman.query(sql, today)}
+
+    assert set(seen) <= shown("day < %s"), "Overtime serves items from earlier days"
+    assert not set(seen) & shown("day = %s"), "and never today's"
+    expect(page.locator(".count")).to_contain_text("Overtime answers so far: 2")
+
+    page.get_by_role("link", name="Back to today's results").click()
+    expect(page.get_by_role("heading", name="Today's results")).to_be_visible()
+    assert dorman.query(untimed)[0][0] == before + 2, "Overtime answers belong to no day"

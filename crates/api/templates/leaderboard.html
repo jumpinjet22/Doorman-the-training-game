@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Leaderboard · Who's At The Door?{% endblock %}
+{% block main %}
+<h1>This week's leaderboard</h1>
+<p class="day">Week of <time datetime="{{ week_of }}">{{ week_of }}</time></p>
+<p class="hint">Ranked by how often your daily answers matched what the crowd settled on. You need {{ minimum }} settled answers this week to appear, and a name, which you can pick after finishing a day.</p>
+{% if rows.is_empty() %}
+<p>Nobody's qualified yet this week.</p>
+{% else %}
+<table class="board">
+  <thead><tr><th scope="col">#</th><th scope="col">Name</th><th scope="col">Right</th><th scope="col">Answers</th></tr></thead>
+  <tbody>
+    {% for row in rows %}
+    <tr><td>{{ row.place }}</td><td>{{ row.handle }}</td><td>{{ row.percent }}%</td><td>{{ row.scored }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

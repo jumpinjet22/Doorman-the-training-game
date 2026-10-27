@@ -25,7 +25,7 @@ import psycopg
 
 from dorman_scorer import config as cfg
 from dorman_scorer import db
-from dorman_scorer.consensus import consensus_file
+from dorman_scorer.consensus import consensus_file, gold_verdicts
 from dorman_scorer.scoring import score
 
 _HELP = {
@@ -101,7 +101,10 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
         players, verdicts = score(items, votes, today, config)
         decided = [v for v in verdicts if v.status != "open"]
         out = args.out_dir / f"consensus-{today.isoformat()}.json"
-        db.save(conn, players, verdicts)
+        trust = {player: scored.trust for player, scored in players.items()}
+        # Gold gets rows too, so the reveal page can't tell it apart; only
+        # the non-gold verdicts are counted and exported.
+        db.save(conn, players, [*verdicts, *gold_verdicts(items, votes, trust)])
         settled = sum(1 for v in decided if v.status == "settled")
         db.record_run(
             conn,

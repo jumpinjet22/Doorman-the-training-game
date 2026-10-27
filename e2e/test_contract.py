@@ -218,6 +218,7 @@ def test_tomorrows_carry_over_is_todays_least_settled_item(bin_dir, base_db_url,
             statuses = dict(
                 conn.execute(
                     "SELECT i.knock_key, c.status FROM consensus c JOIN items i ON i.id = c.item_id"
+                    " WHERE i.gold_answer IS NULL"
                 ).fetchall()
             )
             [(keys,)] = conn.execute(

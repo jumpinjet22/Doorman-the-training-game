@@ -29,8 +29,8 @@ audit log; KNOCK's export script refuses anything else.
 |---|---|
 | `crates/core` | Batch format, daily-set picking, intent options, share card. Pure, no IO. |
 | `crates/db` | Postgres queries and `migrations/`. |
-| `crates/ingest` | `dorman-ingest`: `migrate`, `load <batch.json>`, `review`/`approve <batch>`, `daily [--day]`. |
-| `crates/api` | `dorman-api`: Axum server, renders pages itself (askama + vanilla JS): today's game one card at a time, results and share card, `/yesterday`, `/about`. |
+| `crates/ingest` | `dorman-ingest`: `migrate`, `load <batch.json>`, `review`/`approve <batch>`, `daily [--day] [--gold-showings N]` (gold retires after N sets, default 5; warns when it runs low). |
+| `crates/api` | `dorman-api`: Axum server, renders pages itself (askama + vanilla JS): today's game one card at a time, results and share card, Overtime, ranks, `/leaderboard`, `/yesterday`, `/about`. |
 | `scorer/` | `dorman-scorer`: Python nightly job. Gold trust, Dawid-Skene, behavior flags, consensus. |
 | `fixtures/batch.example.json` | A real batch from KNOCK's export script, used by tests. |
 
@@ -123,7 +123,9 @@ fail CI the moment they start passing, so the marker gets removed with the fix.
 ## Trust and consensus, in short
 
 - A new player's vote counts about 0.1 of a veteran's: `Beta(1, 9)` over their
-  gold answers. Gold is mixed into every daily set and looks like everything else.
+  gold answers. Gold is mixed into every daily set and looks like everything else,
+  down to the reveal page and share card (the scorer writes it a settled row like
+  any other item's). Each gold item retires after 5 daily sets.
 - Dawid-Skene over the non-gold votes scales that down for players who are
   systematically off. A player needs 5+ non-gold votes before it applies.
 - Answering too fast, always picking the same position, alternating
@@ -150,7 +152,6 @@ answers each, so use the soft-launch profile until real traffic exists.
 
 ## Not done yet (before going public)
 
-- Overtime mode, ranks, leaderboard.
 - Terms, privacy policy, 13+ age gate (see section 8 of the plan).
 - Switching sqlx to compile-time-checked `query!` macros once CI has Postgres.
 

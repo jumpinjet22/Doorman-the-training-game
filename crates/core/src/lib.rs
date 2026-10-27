@@ -5,6 +5,7 @@ pub mod calendar;
 pub mod clock;
 pub mod daily;
 pub mod limits;
+pub mod ranks;
 pub mod share;
 pub mod turnstile;
 
@@ -12,6 +13,7 @@ pub use batch::{Batch, BatchError, BatchItem, BOTH_BAD};
 pub use calendar::{day_number, next_reset, streak};
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use daily::{intent_options, pick_daily_set, DailyPlan};
+pub use ranks::{leaderboard, rank, Rank, Record, Standing};
 pub use share::{score_answer, share_card, Decision, Outcome};
 pub use turnstile::{TurnstileVerifier, Verdict};
 

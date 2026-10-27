@@ -678,3 +678,282 @@ async fn days_already_played_are_backfilled(pool: PgPool) {
         .is_empty());
     assert_eq!(count(&pool, "player_days").await, 2);
 }
+
+// -- gold rotation --------------------------------------------------------------
+
+/// Publishes `keys` for each day in turn, starting 2026-10-01.
+async fn publish_days(pool: &PgPool, days: usize, keys: &[String]) {
+    for n in 0..days {
+        let day = day("2026-10-01") + chrono::Days::new(n as u64);
+        publish(pool, day, keys).await;
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn gold_retires_after_its_showings(pool: PgPool) {
+    let batch = load_example(&pool).await;
+    let gold: Vec<String> = batch
+        .items
+        .iter()
+        .filter(|i| i.gold_answer().is_some())
+        .map(|i| i.knock_key().to_string())
+        .collect();
+    let (first, rest) = gold.split_first().unwrap();
+    publish_days(
+        &pool,
+        dorman_db::GOLD_SHOWINGS as usize - 1,
+        std::slice::from_ref(first),
+    )
+    .await;
+    let last = day("2026-10-01") + chrono::Days::new(dorman_db::GOLD_SHOWINGS as u64 - 2);
+    let pools = dorman_db::daily_pools(&pool, last).await.unwrap();
+    assert!(pools.gold.contains(first), "one showing left");
+
+    let next = last + chrono::Days::new(1);
+    publish(&pool, next, std::slice::from_ref(first)).await;
+    let pools = dorman_db::daily_pools(&pool, next).await.unwrap();
+    assert!(!pools.gold.contains(first), "retired");
+    assert_eq!(&pools.gold, rest);
+    // Only showings up to the day before count, so the past is unchanged.
+    let pools = dorman_db::daily_pools(&pool, last).await.unwrap();
+    assert!(pools.gold.contains(first));
+}
+
+/// Random runs of days with random retirement limits: however the sets fall,
+/// no gold item is ever in more sets than its limit.
+#[sqlx::test(migrations = "./migrations")]
+async fn a_retired_gold_item_never_comes_back(pool: PgPool) {
+    let template = example_batch();
+    let gold_item = template
+        .items
+        .iter()
+        .find(|i| matches!(i, BatchItem::Intent(_)) && i.gold_answer().is_some())
+        .unwrap();
+    let mut runner = TestRunner::deterministic();
+    let strategy = (1i64..5, 1usize..8, 5usize..25, "[a-z]{6}");
+    for _ in 0..24 {
+        let (limit, gold_count, days, seed) = strategy.new_tree(&mut runner).unwrap().current();
+        sqlx::query("TRUNCATE items, batches, daily_sets CASCADE")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut batch = template.clone();
+        batch.items = (0..gold_count)
+            .map(|n| {
+                let mut item = gold_item.clone();
+                if let BatchItem::Intent(i) = &mut item {
+                    i.knock_key = format!("gold-{n}");
+                }
+                item
+            })
+            .collect();
+        load_pending(&pool, &batch).await;
+        approve(&pool, &batch.batch).await;
+        for n in 0..days {
+            let today = day("2026-10-01") + chrono::Days::new(n as u64);
+            let pools = dorman_db::daily_pools_retiring(&pool, today - chrono::Days::new(1), limit)
+                .await
+                .unwrap();
+            let keys = pick_daily_set(
+                &format!("{seed}{today}"),
+                DailyPlan::default(),
+                &pools.new,
+                &pools.gold,
+                &pools.carry_over,
+            );
+            dorman_db::set_daily(&pool, today, &keys).await.unwrap();
+        }
+        let shown: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT i.knock_key, count(*) FROM daily_sets d JOIN items i ON i.id = ANY (d.item_ids)
+             GROUP BY i.knock_key",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        for (key, times) in shown {
+            assert!(times <= limit, "{key} shown {times} times, limit {limit}");
+        }
+    }
+}
+
+// -- overtime -------------------------------------------------------------------
+
+#[sqlx::test(migrations = "./migrations")]
+async fn overtime_serves_past_items_lightest_first_never_todays_or_answered_ones(pool: PgPool) {
+    let batch = load_example(&pool).await;
+    let keys: Vec<String> = batch
+        .items
+        .iter()
+        .map(|i| i.knock_key().to_string())
+        .collect();
+    let (yesterday, today) = (day("2026-10-26"), day("2026-10-27"));
+    let shown = publish(&pool, yesterday, &keys[..4]).await;
+    publish(&pool, today, &keys[3..5]).await;
+    let player = dorman_db::create_player(&pool).await.unwrap();
+
+    // keys[5] was never shown and keys[3] is back today: neither is served.
+    // Of shown[0..3], weight decides: shown[2] has none at all.
+    for (item, weight) in [(&shown[0], 4.0_f32), (&shown[1], 1.0)] {
+        sqlx::query(
+            "INSERT INTO consensus (item_id, total_weight, status) VALUES ($1, $2, 'open')",
+        )
+        .bind(item.id)
+        .bind(weight)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let mut served = Vec::new();
+    while let Some(item) = dorman_db::overtime_next(&pool, player, today)
+        .await
+        .unwrap()
+    {
+        assert!(dorman_db::overtime_item(&pool, player, today, item.id)
+            .await
+            .unwrap()
+            .is_some());
+        answer(&pool, player, today, &item).await;
+        assert!(dorman_db::overtime_item(&pool, player, today, item.id)
+            .await
+            .unwrap()
+            .is_none());
+        served.push(item.knock_key);
+        assert!(served.len() <= 3);
+    }
+    assert_eq!(
+        served,
+        vec![keys[2].clone(), keys[1].clone(), keys[0].clone()]
+    );
+    for (n, key) in keys.iter().enumerate().skip(3) {
+        let item = dorman_db::item(&pool, batch_item_id(&pool, key).await)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            dorman_db::overtime_item(&pool, player, today, item.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "keys[{n}] isn't for Overtime"
+        );
+    }
+    assert_eq!(
+        dorman_db::overtime_answered(&pool, player).await.unwrap(),
+        0,
+        "answered as daily votes here"
+    );
+}
+
+async fn batch_item_id(pool: &PgPool, key: &str) -> uuid::Uuid {
+    sqlx::query_scalar("SELECT id FROM items WHERE knock_key = $1")
+        .bind(key)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+// -- ranks and the leaderboard ----------------------------------------------------
+
+async fn settle(pool: &PgPool, item: &dorman_db::StoredItem, label: &str) {
+    sqlx::query("INSERT INTO consensus (item_id, label, status) VALUES ($1, $2, 'settled')")
+        .bind(item.id)
+        .bind(label)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn a_record_counts_only_settled_answers(pool: PgPool) {
+    let today = day("2026-10-27");
+    let items = seed_day(&pool, today).await;
+    let player = dorman_db::create_player(&pool).await.unwrap();
+    for item in &items {
+        answer(&pool, player, today, item).await;
+    }
+    dorman_db::record_progress(&pool, player, today)
+        .await
+        .unwrap();
+    settle(&pool, &items[0], &valid_answer(&items[0])).await;
+    settle(&pool, &items[1], "something else").await;
+    sqlx::query("INSERT INTO consensus (item_id, status) VALUES ($1, 'disputed')")
+        .bind(items[2].id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        dorman_db::player_record(&pool, player).await.unwrap(),
+        (1, 2, 1)
+    );
+    let nobody = dorman_db::create_player(&pool).await.unwrap();
+    assert_eq!(
+        dorman_db::player_record(&pool, nobody).await.unwrap(),
+        (0, 0, 0)
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn weekly_standings_cover_handles_in_the_window_and_say_who_is_flagged(pool: PgPool) {
+    let batch = load_example(&pool).await;
+    let keys: Vec<String> = batch
+        .items
+        .iter()
+        .map(|i| i.knock_key().to_string())
+        .collect();
+    let (before, inside) = (day("2026-10-25"), day("2026-10-27"));
+    let old = publish(&pool, before, &keys[..1]).await;
+    let new = publish(&pool, inside, &keys[1..3]).await;
+    for item in old.iter().chain(&new) {
+        settle(&pool, item, &valid_answer(item)).await;
+    }
+    let named = dorman_db::create_player(&pool).await.unwrap();
+    let flagged = dorman_db::create_player(&pool).await.unwrap();
+    let anonymous = dorman_db::create_player(&pool).await.unwrap();
+    assert!(dorman_db::set_handle(&pool, named, "Ada").await.unwrap());
+    assert!(dorman_db::set_handle(&pool, flagged, "Troll")
+        .await
+        .unwrap());
+    sqlx::query("UPDATE players SET flags = '{\"too_fast\": 0.3}' WHERE id = $1")
+        .bind(flagged)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for player in [named, flagged, anonymous] {
+        answer(&pool, player, before, &old[0]).await;
+        answer(&pool, player, inside, &new[0]).await;
+        dorman_db::record_vote(&pool, player, new[1].id, Some(inside), "nope", 3000)
+            .await
+            .unwrap();
+    }
+    let mut rows = dorman_db::weekly_standings(&pool, day("2026-10-26"), inside)
+        .await
+        .unwrap();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![("Ada".into(), 2, 1, false), ("Troll".into(), 2, 1, true)]
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn handles_are_unique_whatever_their_case(pool: PgPool) {
+    let a = dorman_db::create_player(&pool).await.unwrap();
+    let b = dorman_db::create_player(&pool).await.unwrap();
+    assert_eq!(dorman_db::handle(&pool, a).await.unwrap(), None);
+    assert!(dorman_db::set_handle(&pool, a, "DoorKeeper").await.unwrap());
+    assert!(!dorman_db::set_handle(&pool, b, "doorkeeper").await.unwrap());
+    assert!(
+        dorman_db::set_handle(&pool, a, "doorkeeper").await.unwrap(),
+        "renaming yourself is fine"
+    );
+    assert_eq!(
+        dorman_db::handle(&pool, a).await.unwrap().as_deref(),
+        Some("doorkeeper")
+    );
+    assert_eq!(
+        dorman_db::handle(&pool, uuid::Uuid::new_v4())
+            .await
+            .unwrap(),
+        None
+    );
+}
