@@ -5,7 +5,8 @@ assistant. Players read what a visitor says at the door and guess why
 they're there, or pick the better of two replies the assistant could give.
 The crowd's answers, weighed by how trustworthy each player has proven to be,
 become training data: intent labels for a classifier, and reply preferences
-for DPO, exported each night for a training job to pick up.
+for DPO. Each night the labels are exported and a fresh intent model is
+trained, replacing the current one only if it does better.
 
 Every visitor line is **synthetic**: generated, reviewed by a person, then
 played. No real doorbell footage or recordings are ever shown.
@@ -56,6 +57,37 @@ training job to pick up. Run it after the scorer's nightly pass.
 
 **An export holds every gold answer.** Keep it off the web server's static
 paths and out of the repo; anyone with it can pass as a perfect player.
+
+### The nightly model
+
+`dorman-trainer` (in `trainer/`) turns an export into an intent classifier:
+TF-IDF over words and characters, then logistic regression. It needs no GPU
+and trains in seconds. Run it from cron after the scorer:
+
+```bash
+dorman-scorer
+dorman-ingest export /var/lib/dorman/export
+dorman-trainer /var/lib/dorman/export /var/lib/dorman/models
+```
+
+- If the export's `intent.jsonl` hasn't changed since the current model was
+  trained (same SHA-256), it does nothing.
+- Crowd labels need `--min-agreement` (default 0.8) of the trust behind them
+  to be trained on, and count in proportion to it. Gold always counts fully.
+- Gold is always held out for testing, along with a fixed share of other
+  items (`--test-share`, default 0.2). Each item stays on the same side of
+  the split every night.
+- Each run that trains writes `models/<time>/` (`model.joblib`,
+  `metrics.json` with macro-F1 and per-intent precision and recall, and the
+  manifest it learned from). `models/current` moves to it only if it scores
+  at least as well as the current model **on the same held-out items**.
+- Too little data (`--min-train`, default 20 rows, at least two intents) is
+  a normal night. Only real errors exit non-zero, so cron mail means
+  something broke.
+
+`model.joblib` is a pickle: only load files this job wrote. DPO needs a GPU
+and isn't trained here; take `dpo.jsonl` to a hosted fine-tuning service or a
+rented GPU.
 
 ## How data moves
 
@@ -159,6 +191,7 @@ reject each other's cookies.
 | `crates/ingest` | `dorman-ingest`: `migrate`, `load <batch.json>`, `review`/`approve <batch>`, `daily [--day] [--gold-showings N]` (gold retires after N sets, default 5; warns when it runs low), `clear-handle <handle>`, `export <dir>` (training data, below). |
 | `crates/api` | `dorman-api`: Axum server, renders pages itself (askama + vanilla JS): today's game one card at a time, results and share card, Overtime, ranks, `/leaderboard`, `/yesterday`, `/about`. |
 | `scorer/` | `dorman-scorer`: Python nightly job. Gold trust, Dawid-Skene, behavior flags, consensus. |
+| `trainer/` | `dorman-trainer`: Python nightly job. Trains the intent model from an export and promotes it if it's better. |
 | `fixtures/batch.example.json` | An example `dorman-batch` file, used by tests. |
 
 ## Tests
@@ -169,11 +202,12 @@ databases; every test gets its own throwaway database.
 ```bash
 export DATABASE_URL=postgres://dorman@127.0.0.1:5432/dorman
 
-cargo test --all-features                     # unit, property, Postgres and HTTP tests
-cd scorer && pytest                           # unit, property, simulation, Postgres
-cd scorer && pytest -m slow                   # large simulations (nightly)
-cd .. && pip install -r e2e/requirements.txt && playwright install chromium
-pytest e2e                                   # real browser
+cargo test --all-features                # unit, property, Postgres and HTTP tests
+(cd scorer && pytest)                    # unit, property, simulation, Postgres
+(cd scorer && pytest -m slow)            # large simulations (nightly)
+(cd trainer && pytest)                   # trains on a small synthetic export
+pip install -r e2e/requirements.txt && playwright install chromium
+pytest e2e                               # real browser
 ```
 
 | Suite | Where |
@@ -193,7 +227,7 @@ Production builds never include it. The browser side gets a fake Turnstile
 widget through Playwright routing, so the suite never talks to Cloudflare.
 
 CI fails under these line-coverage gates: `dorman-core` 85%, `dorman-db` 85%,
-`dorman-api` 75%, `dorman_scorer` 90%.
+`dorman-api` 75%, `dorman_scorer` 90%, `dorman_trainer` 90%.
 
 Tests marked `xfail(strict=True)` are known gaps that are planned work. They
 fail CI the moment they start passing, so the marker gets removed with the fix.
@@ -247,8 +281,6 @@ answers each, so use the soft-launch profile until real traffic exists.
 
 - Terms, privacy policy, 13+ age gate (see section 8 of the plan).
 - A line on `/about` telling players their answers train a model.
-- The nightly training job: export after the scorer, train an intent
-  baseline, keep the new model only if it beats the last.
 - Switching sqlx to compile-time-checked `query!` macros once CI has Postgres.
 
 ## Security

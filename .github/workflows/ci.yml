@@ -85,6 +85,21 @@ jobs:
       # Unit, property, simulation and Postgres tests, with the 90% gate.
       - run: pytest --cov=dorman_scorer --cov-report=term-missing --cov-fail-under=90
 
+  trainer:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trainer
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff check . && ruff format --check .
+      # Trains on a small synthetic export; CPU only, a few seconds.
+      - run: pytest --cov=dorman_trainer --cov-report=term-missing --cov-fail-under=90
+
   e2e:
     runs-on: ubuntu-latest
     services:
