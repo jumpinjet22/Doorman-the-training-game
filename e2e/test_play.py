@@ -84,6 +84,9 @@ def _publish(dorman: Dorman, bin_dir: Path, day: str) -> None:
 
 
 def _run_scorer(dorman: Dorman, today: str, out: Path) -> None:
+    """The night run. One player is the whole crowd here, so the bar to settle
+    is lowered until their answers are enough: gold is decided by the crowd
+    like everything else, never settled on its known answer regardless."""
     subprocess.run(
         [
             sys.executable,
@@ -95,6 +98,8 @@ def _run_scorer(dorman: Dorman, today: str, out: Path) -> None:
             str(out),
             "--today",
             today,
+            "--min-weight",
+            "0.01",
         ],
         check=True,
         capture_output=True,
@@ -182,7 +187,7 @@ def test_the_next_morning_the_card_fills_in_and_the_streak_is_two(
     page.goto("/yesterday")
     filled = _card_text(page)
     assert re.fullmatch(rf"🚪 #{number}  [⬜🟩🟨🟥]{{{total}}}", filled), filled
-    assert set(filled) & set("🟩🟨🟥"), "items with known answers are scored by morning"
+    assert set(filled) & set("🟩🟨🟥"), "items are scored by morning"
 
     _publish(dorman, bin_dir, second)
 

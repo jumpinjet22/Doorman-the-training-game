@@ -59,7 +59,9 @@ A loaded batch is `pending` until someone runs `approve`; only approved
 batches feed daily sets.
 
 A batch item may carry an optional `explanation` (up to 400 characters). It is
-shown only after a player has voted, so it never reaches an unanswered card.
+shown on `/yesterday`, to players who answered the item, once the item is out
+of play: an explanation names the answer, so one shown while the card could
+still come round (gold runs on for up to 5 days) would leak a gold answer.
 Players may also say how sure they are (`unsure`, `fairly`, `certain`); that
 is stored on the vote and summarised on their results page, and the scorer
 ignores it.
@@ -79,7 +81,15 @@ ignores it.
 
 Behind a proxy or load balancer, set `DORMAN_CLIENT_IP_HEADER`: without it,
 every client shares the proxy's address, so the whole site gets one network's
-allowance of new players (20 an hour by default).
+allowance of new players (20 an hour by default). A request with no usable
+address at all goes into one shared `unknown` bucket and is logged at error
+level each time, so a misconfigured header shows up in the logs at once.
+
+The limit is per network on purpose: it makes account farms slow, at the cost
+that a school or a carrier's NAT shares one allowance. Only players actually
+created count against it, so refused or failed attempts don't use it up, and
+a vote that's over a rate limit is refused before its single-use Turnstile
+token is spent.
 
 Then, on the KNOCK box:
 
@@ -130,8 +140,12 @@ fail CI the moment they start passing, so the marker gets removed with the fix.
 
 - A new player's vote counts about 0.1 of a veteran's: `Beta(1, 9)` over their
   gold answers. Gold is mixed into every daily set and looks like everything else,
-  down to the reveal page and share card (the scorer writes it a settled row like
-  any other item's). Each gold item retires after 5 daily sets.
+  down to the reveal page and share card: the scorer decides gold's row from the
+  crowd's votes with the same rule as any other item's, never from the known
+  answer. Gold runs on consecutive days only and retires after 5 daily sets or
+  the first day it's left out, whichever comes first, so the reveal the day
+  after its last showing can never be reused on it. Nothing about an item
+  still in play (a record's "right" count included) is shown before it leaves.
 - Dawid-Skene over the non-gold votes scales that down for players who are
   systematically off. A player needs 5+ non-gold votes before it applies.
 - Answering too fast, always picking the same position, alternating
@@ -142,14 +156,24 @@ fail CI the moment they start passing, so the marker gets removed with the fix.
   favor that answer, every new-account vote on that item counts for zero in
   that night's run. With no established votes on the item yet, the burst is
   held back until regulars weigh in.
+- **Cohorts:** accounts created within 72 hours of each other that answer at
+  least 90% of 5+ shared non-gold items identically are linked; 8+ linked
+  accounts are a cohort, whatever their age, and on any item where a cohort's
+  answer isn't the clear choice of everyone else, its votes count for zero.
+  That catches farms that age their accounts first or keep under 8 per item.
+- **Answer timing** is measured by the server: each card is rendered with a
+  signed token naming the item, the player and when it was served, and the
+  vote hands it back. Whatever the client says about its own timing is
+  ignored; a missing or forged token counts as no time at all.
 - An item **settles** with ≥ 5.0 total weight and either ≥ 80% weighted share,
   or a Dawid-Skene posterior ≥ 0.95 with ≥ 60% weighted share. If it hasn't
   settled 3 days after it was first shown, it's **disputed** and goes to a
   human. A settled answer that contradicts a confident KNOCK judge is also
   disputed.
 - Each run is one transaction and is logged in `scoring_runs`; rerunning a
-  day replaces it. `consensus.split` holds the weighted split per answer for
-  the reveal page.
+  day replaces it. A run with `new_account_hours` at 0 (soft launch) logs a
+  warning and records it in `scoring_runs.warnings`. `consensus.split` holds
+  the weighted split per answer for the reveal page.
 
 Every threshold is configurable: `--profile soft-launch` (weight 2.0, share
 0.7, brigade detection off, since on launch day every account is new), `DORMAN_MIN_WEIGHT`-style environment variables, or flags; see

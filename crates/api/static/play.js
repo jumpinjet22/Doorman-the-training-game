@@ -3,8 +3,6 @@
 // - The no-game page counts down to the next game.
 // - The results page can copy or share the card.
 
-const shownAt = performance.now();
-
 // Cloudflare's widget puts a single-use token in the form once it's sure
 // there's a person here. Wait for one we haven't spent yet.
 let spent = "";
@@ -57,7 +55,6 @@ document.querySelectorAll("form.vote").forEach((form) => {
   const next = card.querySelector(".next");
   const buttons = form.querySelectorAll("button");
   const sure = form.querySelector("fieldset.sure");
-  const why = card.querySelector(".explanation");
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = event.submitter;
@@ -84,7 +81,7 @@ document.querySelectorAll("form.vote").forEach((form) => {
           item_id: form.elements.item_id.value,
           answer: button.value,
           confidence,
-          ms_to_answer: Math.round(performance.now() - shownAt),
+          served: form.elements.served.value,
           turnstile_token: await freshToken(form),
         }),
       });
@@ -93,14 +90,8 @@ document.querySelectorAll("form.vote").forEach((form) => {
       return;
     }
     if (!res.ok) { fail(MESSAGES[res.status] ?? "Couldn't save that one."); return; }
-    const { remaining, split, explanation } = await res.json();
+    const { remaining, split } = await res.json();
     renderBars(box, split, button.value);
-    if (why && explanation) {
-      const lead = document.createElement("strong");
-      lead.textContent = "Why:";
-      why.replaceChildren(lead, " " + explanation);
-      why.hidden = false;
-    }
     // Overtime has no end to count down to; its link stays as it is.
     if (remaining !== null) next.textContent = remaining === 0 ? "See your results" : "Next card";
     next.hidden = false;

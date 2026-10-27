@@ -7,6 +7,7 @@ pub mod confidence;
 pub mod daily;
 pub mod limits;
 pub mod ranks;
+pub mod served;
 pub mod share;
 pub mod turnstile;
 

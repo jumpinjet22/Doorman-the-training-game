@@ -23,11 +23,10 @@
     {% endfor %}
   </ul>
   <div class="split" aria-live="polite">{% call m::bars(list) %}{% endcall %}</div>
-  {% call m::explanation(item) %}{% endcall %}
   {% when None %}
   <form class="vote" method="post" action="/vote">
     <input type="hidden" name="item_id" value="{{ item.id }}">
-    <input type="hidden" name="shown_at" value="{{ shown_at }}">
+    <input type="hidden" name="served" value="{{ served }}">
     {% if overtime.is_some() %}<input type="hidden" name="overtime" value="1">{% endif %}
     <fieldset class="sure">
       <legend>How sure are you? <span class="hint">(optional)</span></legend>
@@ -43,7 +42,6 @@
     <div class="cf-turnstile" data-sitekey="{{ turnstile_site_key }}" data-action="vote" data-appearance="interaction-only"></div>
   </form>
   <div class="split" aria-live="polite"></div>
-  <p class="explanation" hidden></p>
   {% endmatch %}
   {% if overtime.is_some() %}
   <a class="next" href="/overtime"{% if split.is_none() %} hidden{% endif %}>Next card</a>
