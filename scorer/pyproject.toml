@@ -20,8 +20,11 @@ include = ["dorman_scorer*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Large simulations run nightly (`pytest -m slow`), not on every push.
+addopts = "-m 'not slow'"
 markers = [
   "sim: scorer runs against simulated crowds",
+  "slow: large simulations, deselected by default",
   "db: needs Postgres (DATABASE_URL)",
 ]
 

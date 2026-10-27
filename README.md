@@ -86,6 +86,7 @@ export DATABASE_URL=postgres://dorman@127.0.0.1:5432/dorman
 
 cargo test --all-features                     # unit, property, Postgres and HTTP tests
 cd scorer && pytest                           # unit, property, simulation, Postgres
+cd scorer && pytest -m slow                   # large simulations (nightly)
 cd .. && pip install -r e2e/requirements.txt && playwright install chromium
 KNOCK_PATH=../KNOCK pytest e2e                # real browser + KNOCK contract
 ```
@@ -119,22 +120,31 @@ fail CI the moment they start passing, so the marker gets removed with the fix.
   gold answers. Gold is mixed into every daily set and looks like everything else.
 - Dawid-Skene over the non-gold votes scales that down for players who are
   systematically off. A player needs 5+ non-gold votes before it applies.
-- Answering too fast, always picking the same position, or alternating
-  positions multiplies trust by 0.3. Players are never told.
-- An item **settles** at ≥ 80% weighted share and ≥ 5.0 total weight. If it
-  hasn't settled 3 days after it was first shown, it's **disputed** and goes to
-  a human. A settled answer that contradicts a confident KNOCK judge is also
+- Answering too fast, always picking the same position, alternating
+  positions, or giving the same answer to over 90% of items multiplies trust
+  by 0.3. Players are never told.
+- **Brigades:** when 8+ accounts under 48 hours old (at the time they voted)
+  pick the same answer on one item, and established players don't clearly
+  favor that answer, every new-account vote on that item counts for zero in
+  that night's run. With no established votes on the item yet, the burst is
+  held back until regulars weigh in.
+- An item **settles** with ≥ 5.0 total weight and either ≥ 80% weighted share,
+  or a Dawid-Skene posterior ≥ 0.95 with ≥ 60% weighted share. If it hasn't
+  settled 3 days after it was first shown, it's **disputed** and goes to a
+  human. A settled answer that contradicts a confident KNOCK judge is also
   disputed.
+- Each run is one transaction and is logged in `scoring_runs`; rerunning a
+  day replaces it. `consensus.split` holds the weighted split per answer for
+  the reveal page.
 
-Heads-up: 5.0 weight is about 8 regulars with 20 gold answers each, or 50
-brand-new players. At soft launch most items will end up disputed. That's
-expected; tune `MIN_WEIGHT` in `scorer/dorman_scorer/consensus.py` once real
-traffic exists.
+Every threshold is configurable: `--profile soft-launch` (weight 2.0, share
+0.7, brigade detection off, since on launch day every account is new), `DORMAN_MIN_WEIGHT`-style environment variables, or flags; see
+`python -m dorman_scorer --help`. 5.0 weight is about 8 regulars with 20 gold
+answers each, so use the soft-launch profile until real traffic exists.
 
 ## Not done yet (before going public)
 
 - The share card and streaks in the UI (the logic is in `crates/core/src/share.rs`).
 - Overtime mode, ranks, leaderboard.
-- Brigade detection beyond the judge guard (many new accounts piling onto the same items).
 - Terms, privacy policy, 13+ age gate (see section 8 of the plan).
 - Switching sqlx to compile-time-checked `query!` macros once CI has Postgres.

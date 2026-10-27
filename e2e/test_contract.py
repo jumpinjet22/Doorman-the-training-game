@@ -20,7 +20,7 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from conftest import drop_database, fresh_database, ingest
+from conftest import FIXTURE_BATCH, drop_database, fresh_database, ingest
 from dorman_scorer.__main__ import main as run_scorer
 
 pytestmark = pytest.mark.contract
@@ -46,6 +46,14 @@ def knock() -> Path:
         pytest.skip("KNOCK_PATH not set")
     pytest.importorskip("knock")
     return Path(path)
+
+
+def _regular(conn: psycopg.Connection) -> uuid.UUID:
+    player = uuid.uuid4()
+    conn.execute(
+        "INSERT INTO players (id, created_at) VALUES (%s, now() - interval '30 days')", (player,)
+    )
+    return player
 
 
 def _synthetic_log(tmp: Path) -> tuple[Path, Path, dict[str, str]]:
@@ -120,7 +128,8 @@ def test_a_batch_round_trips_into_training_reviews(knock, bin_dir, base_db_url, 
         ingest(bin_dir, db_url, "approve", "contract")
         ingest(bin_dir, db_url, "daily", "--day", DAY)
 
-        # Trusted regulars: right on gold, all agreeing the last line isn't for the door.
+        # Trusted regulars (accounts a month old, so not a brigade): right on
+        # gold, all agreeing the last line isn't for the door.
         with psycopg.connect(db_url) as conn:
             items = dict(conn.execute("SELECT knock_key, id FROM items").fetchall())
             gold = conn.execute(
@@ -128,8 +137,7 @@ def test_a_batch_round_trips_into_training_reviews(knock, bin_dir, base_db_url, 
             ).fetchall()
             assert gold, "the approved entry should arrive as gold"
             for _ in range(60):
-                player = uuid.uuid4()
-                conn.execute("INSERT INTO players (id) VALUES (%s)", (player,))
+                player = _regular(conn)
                 for item_id, answer in [*gold, (items[keys["4"]], "not_addressed")]:
                     conn.execute(
                         "INSERT INTO votes (player_id, item_id, day, answer, ms_to_answer)"
@@ -160,3 +168,65 @@ def test_a_batch_round_trips_into_training_reviews(knock, bin_dir, base_db_url, 
     assert written[target["knock_key"]]["status"] == "approved"
     assert "crowd settled" in written[target["knock_key"]]["comment"]
     assert written[keys["0"]] == {"status": "approved"}, "the human review is untouched"
+
+
+def test_tomorrows_carry_over_is_todays_least_settled_item(bin_dir, base_db_url, tmp_path) -> None:
+    """The scorer's consensus rows drive `dorman-ingest daily`'s carry-over:
+    a settled item never comes back, and the unsettled item with the weakest
+    lead does."""
+    batch = json.loads(FIXTURE_BATCH.read_text())
+    open_items = [i for i in batch["items"] if not i["gold_answer"]]
+    assert len(open_items) == 3
+    settled, leaning, split = (i["knock_key"] for i in open_items)
+    # Agreeing with the generator, so the judge guard stays out of it.
+    right = {i["knock_key"]: i["generator_intent"] for i in open_items}
+    tomorrow = "2026-10-28"
+
+    name, db_url = fresh_database(base_db_url)
+    try:
+        ingest(bin_dir, db_url, "migrate")
+        ingest(bin_dir, db_url, "load", str(FIXTURE_BATCH))
+        ingest(bin_dir, db_url, "daily", "--day", DAY)
+        with psycopg.connect(db_url) as conn:
+            items = dict(conn.execute("SELECT knock_key, id FROM items").fetchall())
+            gold = conn.execute(
+                "SELECT id, gold_answer FROM items WHERE gold_answer IS NOT NULL"
+            ).fetchall()
+            for n in range(20):
+                ballot = [
+                    (items[settled], right[settled]),
+                    # 15 to 5: a clear lead, but short of settling.
+                    (items[leaning], right[leaning] if n < 15 else "other"),
+                    # 11 to 9: barely a lead at all.
+                    (items[split], right[split] if n < 11 else "other"),
+                ]
+                player = _regular(conn)
+                for item_id, answer in [*gold, *ballot]:
+                    conn.execute(
+                        "INSERT INTO votes (player_id, item_id, day, answer, ms_to_answer)"
+                        " VALUES (%s, %s, %s, %s, 4000)",
+                        (player, item_id, DAY, answer),
+                    )
+
+        args = ["--database-url", db_url, "--out-dir", str(tmp_path), "--today", DAY]
+        # A share of 0.75 needs Dawid-Skene to be sure; keep this about ordering.
+        assert run_scorer([*args, "--min-posterior", "1.01"]) == 0
+        out = ingest(bin_dir, db_url, "daily", "--day", tomorrow)
+        assert "2 carry-over" in out
+        with psycopg.connect(db_url) as conn:
+            statuses = dict(
+                conn.execute(
+                    "SELECT i.knock_key, c.status FROM consensus c JOIN items i ON i.id = c.item_id"
+                ).fetchall()
+            )
+            [(keys,)] = conn.execute(
+                "SELECT array_agg(i.knock_key) FROM daily_sets d"
+                " JOIN items i ON i.id = ANY (d.item_ids) WHERE d.day = %s",
+                (tomorrow,),
+            ).fetchall()
+    finally:
+        drop_database(base_db_url, name)
+
+    assert statuses == {settled: "settled", leaning: "open", split: "open"}
+    assert split in keys
+    assert settled not in keys and leaning not in keys
