@@ -649,7 +649,9 @@ dependencies = [
  "clap",
  "dorman-core",
  "dorman-db",
+ "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tokio",
  "uuid",
 ]
