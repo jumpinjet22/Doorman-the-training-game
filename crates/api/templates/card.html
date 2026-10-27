@@ -4,17 +4,17 @@
 {% match overtime %}
 {% when Some with (count) %}
 <h1>Overtime</h1>
-{% call m::masthead(masthead) %}
+{% call m::masthead(masthead) %}{% endcall %}
 <p class="count">Overtime answers so far: {{ count }}. <a href="/">Back to today's results</a></p>
 {% when None %}
 <h1>Today's game</h1>
-{% call m::masthead(masthead) %}
+{% call m::masthead(masthead) %}{% endcall %}
 <progress class="progress" value="{{ position }}" max="{{ total }}" aria-label="Card {{ position }} of {{ total }}"></progress>
 <p class="count">Card {{ position }} of {{ total }}</p>
 {% endmatch %}
 <section class="card" data-item="{{ item.id }}" aria-labelledby="prompt">
   <h2 class="prompt" id="prompt">{{ item.prompt }}</h2>
-  {% call m::scene(item) %}
+  {% call m::scene(item) %}{% endcall %}
   {% match split %}
   {% when Some with (list) %}
   <ul class="choices">
@@ -22,7 +22,7 @@
     <li><button type="button" disabled{% if item.answered.as_deref() == Some(choice.value.as_str()) %} class="mine"{% endif %}>{{ choice.label }}</button></li>
     {% endfor %}
   </ul>
-  <div class="split" aria-live="polite">{% call m::bars(list) %}</div>
+  <div class="split" aria-live="polite">{% call m::bars(list) %}{% endcall %}</div>
   {% when None %}
   <form class="vote" method="post" action="/vote">
     <input type="hidden" name="item_id" value="{{ item.id }}">

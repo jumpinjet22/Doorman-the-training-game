@@ -3,7 +3,7 @@
 {% block title %}Yesterday · Who's At The Door?{% endblock %}
 {% block main %}
 <h1>Yesterday's game</h1>
-{% call m::masthead(masthead) %}
+{% call m::masthead(masthead) %}{% endcall %}
 {% if !played_day %}
 <p>There was no game yesterday.</p>
 {% else if !out %}
@@ -21,9 +21,9 @@
   {% for row in rows %}
   <li class="result" data-item="{{ row.item.id }}">
     <p class="prompt">{{ row.item.prompt }}</p>
-    {% call m::scene(row.item) %}
+    {% call m::scene(row.item) %}{% endcall %}
     <p class="verdict">{{ row.verdict }}</p>
-    {% call m::bars(row.bars) %}
+    {% call m::bars(row.bars) %}{% endcall %}
   </li>
   {% endfor %}
 </ol>

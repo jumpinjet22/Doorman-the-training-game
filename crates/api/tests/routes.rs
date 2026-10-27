@@ -571,7 +571,7 @@ async fn visitor_text_is_escaped(pool: PgPool) {
     let (_, _, page) = h.get("/", None).await;
     assert!(!page.contains("<script>alert"));
     assert!(!page.contains("<img src=x"));
-    assert!(page.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    assert!(page.contains(&escaped("<script>alert(1)</script>")));
 }
 
 // -- Turnstile ----------------------------------------------------------------
@@ -1037,16 +1037,20 @@ async fn the_page_has_no_inline_script_or_style(pool: PgPool) {
 // -- the game -------------------------------------------------------------------
 
 /// The visitor's line as it appears in a page, HTML-escaped.
+/// `text` as askama's HTML escaper writes it, so assertions don't depend on
+/// which entity spelling the template engine happens to use.
+fn escaped(text: &str) -> String {
+    askama::filters::escape(text, askama::filters::Html)
+        .expect("escaping can't fail")
+        .to_string()
+}
+
 fn line(item: &StoredItem) -> String {
     let text = match &item.item {
         BatchItem::Intent(i) => &i.text,
         BatchItem::Pair(p) => &p.text,
     };
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
+    escaped(text)
 }
 
 /// The card on a page, by its item id.
@@ -1474,7 +1478,7 @@ async fn yesterday_cant_tell_gold_from_the_rest(pool: PgPool) {
             }
             None => {
                 assert_eq!(
-                    page.matches("You didn&#x27;t answer this one").count(),
+                    page.matches(&escaped("You didn't answer this one")).count(),
                     rows
                 );
                 assert!(!page.contains(r#"<ul class="bars">"#));
@@ -1514,10 +1518,7 @@ async fn yesterday_waits_for_the_night_run_and_never_names_a_raw_answer(pool: Pg
     assert!(page.contains("Day 3"), "yesterday's number");
     assert_eq!(listed(&page).len(), items.len());
     let label = dorman_api::views::choice_label(&items[1].item, &mine);
-    assert!(page.contains(&format!(
-        "The crowd settled on: {}.",
-        label.replace('\'', "&#x27;")
-    )));
+    assert!(page.contains(&format!("The crowd settled on: {}.", escaped(&label))));
     assert!(
         page.contains("Something else"),
         "an unknown answer gets no raw name"
@@ -1569,7 +1570,7 @@ async fn pair_replies_are_shuffled_and_read_as_letters_everywhere(pool: PgPool) 
     h.clock.advance(Duration::days(1));
     h.scored("2026-10-28").await;
     let (_, _, page) = h.get("/yesterday", Some(&cookie)).await;
-    let reply = b.text.replace('\'', "&#x27;").replace('"', "&quot;");
+    let reply = escaped(&b.text);
     assert!(
         page.contains(&format!(
             "The crowd settled on: B: \u{201c}{reply}\u{201d}."
@@ -1649,7 +1650,7 @@ async fn overtime_serves_each_past_item_once_and_never_todays(pool: PgPool) {
         let (_, _, page) = h.get("/overtime", Some(&cookie)).await;
         let Some(item) = past.iter().find(|item| shows_card(&page, item)) else {
             assert!(
-                page.contains("You&#x27;ve answered everything there is for now."),
+                page.contains(&escaped("You've answered everything there is for now.")),
                 "{page}"
             );
             break;

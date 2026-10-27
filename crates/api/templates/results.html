@@ -2,7 +2,7 @@
 {% import "macros.html" as m %}
 {% block main %}
 <h1>Today's results</h1>
-{% call m::masthead(masthead) %}
+{% call m::masthead(masthead) %}{% endcall %}
 <section class="share" aria-labelledby="card-heading">
   <h2 id="card-heading">Your card</h2>
   <pre id="share-card">{{ card }}</pre>
@@ -33,9 +33,9 @@
   {% for row in rows %}
   <li class="result">
     <p class="prompt">{{ row.item.prompt }}</p>
-    {% call m::scene(row.item) %}
+    {% call m::scene(row.item) %}{% endcall %}
     <p>You said: <strong>{{ row.mine }}</strong></p>
-    {% call m::bars(row.bars) %}
+    {% call m::bars(row.bars) %}{% endcall %}
   </li>
   {% endfor %}
 </ol>

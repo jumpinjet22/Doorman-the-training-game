@@ -105,9 +105,14 @@ fn knock_keys(rows: &[sqlx::postgres::PgRow]) -> Result<Vec<String>, Error> {
     rows.iter().map(|row| row.try_get("knock_key")).collect()
 }
 
-/// SQL true when item `i` comes from a batch a person has approved.
-const APPROVED: &str =
-    "EXISTS (SELECT 1 FROM batches b WHERE b.name = i.batch AND b.status = 'approved')";
+/// SQL true when item `i` comes from a batch a person has approved. A macro
+/// rather than a `const` so queries can `concat!` it into one `&'static str`:
+/// sqlx refuses SQL assembled at runtime, and this way none is.
+macro_rules! approved {
+    () => {
+        "EXISTS (SELECT 1 FROM batches b WHERE b.name = i.batch AND b.status = 'approved')"
+    };
+}
 
 /// How many daily sets a gold item is shown in before it's retired. Gold
 /// that keeps coming back is gold players can learn to recognise; five
@@ -127,17 +132,21 @@ pub async fn daily_pools_retiring(
     before: NaiveDate,
     gold_showings: i64,
 ) -> Result<DailyPools, Error> {
-    let new = sqlx::query(&format!(
+    let new = sqlx::query(concat!(
         "SELECT knock_key FROM items i
-         WHERE gold_answer IS NULL AND {APPROVED}
+         WHERE gold_answer IS NULL AND ",
+        approved!(),
+        "
            AND NOT EXISTS (SELECT 1 FROM daily_sets d WHERE i.id = ANY (d.item_ids))
          ORDER BY knock_key"
     ))
     .fetch_all(pool)
     .await?;
-    let gold = sqlx::query(&format!(
+    let gold = sqlx::query(concat!(
         "SELECT knock_key FROM items i
-         WHERE gold_answer IS NOT NULL AND {APPROVED}
+         WHERE gold_answer IS NOT NULL AND ",
+        approved!(),
+        "
            AND (SELECT count(*) FROM daily_sets d
                 WHERE i.id = ANY (d.item_ids) AND d.day <= $1) < $2
          ORDER BY knock_key"
@@ -146,11 +155,13 @@ pub async fn daily_pools_retiring(
     .bind(gold_showings)
     .fetch_all(pool)
     .await?;
-    let carry_over = sqlx::query(&format!(
+    let carry_over = sqlx::query(concat!(
         "SELECT i.knock_key FROM daily_sets d
          JOIN items i ON i.id = ANY (d.item_ids)
          LEFT JOIN consensus c ON c.item_id = i.id
-         WHERE d.day = $1 AND i.gold_answer IS NULL AND {APPROVED}
+         WHERE d.day = $1 AND i.gold_answer IS NULL AND ",
+        approved!(),
+        "
            AND coalesce(c.status, 'open') <> 'settled'
          ORDER BY coalesce(c.share, 0), i.knock_key"
     ))
@@ -167,11 +178,13 @@ pub async fn daily_pools_retiring(
 /// Publishes the set for `day`, replacing any earlier one for that day.
 /// Items from batches that aren't approved are left out.
 pub async fn set_daily(pool: &PgPool, day: NaiveDate, knock_keys: &[String]) -> Result<(), Error> {
-    sqlx::query(&format!(
+    sqlx::query(concat!(
         "INSERT INTO daily_sets (day, item_ids)
-         SELECT $1, coalesce(array_agg(i.id ORDER BY k.ord), '{{}}')
+         SELECT $1, coalesce(array_agg(i.id ORDER BY k.ord), '{}')
          FROM unnest($2::text[]) WITH ORDINALITY AS k(key, ord)
-         JOIN items i ON i.knock_key = k.key AND {APPROVED}
+         JOIN items i ON i.knock_key = k.key AND ",
+        approved!(),
+        "
          ON CONFLICT (day) DO UPDATE SET item_ids = excluded.item_ids, published_at = now()"
     ))
     .bind(day)
@@ -459,13 +472,16 @@ pub async fn verdicts(pool: &PgPool, item_ids: &[Uuid]) -> Result<HashMap<Uuid, 
 /// approved, already shown in an earlier daily set (so Overtime never
 /// previews tomorrow's items), not in today's set, and not yet answered by
 /// them. Gold is served like anything else, so Overtime can't sort it out.
-const OVERTIME: &str = "{APPROVED}
+macro_rules! overtime {
+    () => {
+        concat!(
+            approved!(),
+            "
     AND EXISTS (SELECT 1 FROM daily_sets d WHERE i.id = ANY (d.item_ids) AND d.day < $2)
     AND NOT EXISTS (SELECT 1 FROM daily_sets d WHERE i.id = ANY (d.item_ids) AND d.day = $2)
-    AND NOT EXISTS (SELECT 1 FROM votes v WHERE v.item_id = i.id AND v.player_id = $1)";
-
-fn overtime_condition() -> String {
-    OVERTIME.replace("{APPROVED}", APPROVED)
+    AND NOT EXISTS (SELECT 1 FROM votes v WHERE v.item_id = i.id AND v.player_id = $1)"
+        )
+    };
 }
 
 /// The next Overtime item for a player: the one with the least total weight
@@ -475,13 +491,14 @@ pub async fn overtime_next(
     player_id: Uuid,
     today: NaiveDate,
 ) -> Result<Option<StoredItem>, Error> {
-    let row = sqlx::query(&format!(
+    let row = sqlx::query(concat!(
         "SELECT i.id, i.knock_key, i.payload FROM items i
          LEFT JOIN consensus c ON c.item_id = i.id
-         WHERE {}
+         WHERE ",
+        overtime!(),
+        "
          ORDER BY coalesce(c.total_weight, 0), md5(i.id::text || $1::text)
-         LIMIT 1",
-        overtime_condition()
+         LIMIT 1"
     ))
     .bind(player_id)
     .bind(today)
@@ -497,9 +514,9 @@ pub async fn overtime_item(
     today: NaiveDate,
     item_id: Uuid,
 ) -> Result<Option<StoredItem>, Error> {
-    let row = sqlx::query(&format!(
-        "SELECT i.id, i.knock_key, i.payload FROM items i WHERE i.id = $3 AND {}",
-        overtime_condition()
+    let row = sqlx::query(concat!(
+        "SELECT i.id, i.knock_key, i.payload FROM items i WHERE i.id = $3 AND ",
+        overtime!()
     ))
     .bind(player_id)
     .bind(today)
