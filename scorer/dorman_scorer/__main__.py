@@ -1,10 +1,10 @@
 """dorman-scorer: the nightly cron job.
 
-    DATABASE_URL=postgres://... python -m dorman_scorer --out-dir exports/
+    DATABASE_URL=postgres://... python -m dorman_scorer
 
-Recomputes every player's trust and every item's verdict, saves both, logs
-the run in scoring_runs, and writes consensus-<date>.json (settled and
-disputed items only) for KNOCK's scripts/import_game_consensus.py.
+Recomputes every player's trust and every item's verdict, saves both, and
+logs the run in scoring_runs. The admin dashboard builds datasets from what
+is saved.
 
 The whole run is one transaction: if it fails part way, nothing it wrote is
 kept, and running it again for the same day replaces the earlier run.
@@ -15,17 +15,15 @@ the flags below, each overriding the one before.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from collections.abc import Mapping
 from datetime import date
-from pathlib import Path
 
 import psycopg
 
 from dorman_scorer import config as cfg
 from dorman_scorer import db
-from dorman_scorer.consensus import consensus_file, gold_verdicts
+from dorman_scorer.consensus import gold_verdicts
 from dorman_scorer.scoring import score
 
 _HELP = {
@@ -53,19 +51,12 @@ def config_from(args: argparse.Namespace, environ: Mapping[str, str]) -> cfg.Con
     return cfg.build(args.profile, **overrides)
 
 
-def _write_atomically(path: Path, text: str) -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
-
-
 def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None) -> int:
     environ = os.environ if environ is None else environ
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--database-url", default=environ.get("DATABASE_URL"))
-    parser.add_argument("--out-dir", type=Path, default=Path("."))
     parser.add_argument(
         "--today",
         type=date.fromisoformat,
@@ -93,17 +84,15 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
     except ValueError as err:
         parser.error(f"bad configuration: {err}")
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
     with psycopg.connect(args.database_url) as conn, conn.transaction():
         db.lock(conn)
         items, votes = db.load(conn)
         today = args.today or db.today(conn)
         players, verdicts = score(items, votes, today, config)
         decided = [v for v in verdicts if v.status != "open"]
-        out = args.out_dir / f"consensus-{today.isoformat()}.json"
         trust = {player: scored.trust for player, scored in players.items()}
         # Gold gets rows too, so the reveal page can't tell it apart; only
-        # the non-gold verdicts are counted and exported.
+        # the non-gold verdicts are counted.
         db.save(conn, players, [*verdicts, *gold_verdicts(items, votes, trust)])
         settled = sum(1 for v in decided if v.status == "settled")
         db.record_run(
@@ -115,18 +104,13 @@ def main(argv: list[str] | None = None, environ: Mapping[str, str] | None = None
                 settled=settled,
                 disputed=len(decided) - settled,
                 brigaded=sum(1 for v in verdicts if v.zeroed_votes),
-                export_path=str(out.resolve()),
                 config=config.as_dict(),
             ),
         )
-        # Last, so a failure above leaves no export behind. If the commit
-        # itself fails, the file is there without its run row; the run log
-        # is what counts, and a rerun rewrites the file.
-        _write_atomically(out, json.dumps(consensus_file(today, decided), indent=2) + "\n")
 
     print(
         f"Scored {len(players)} players and {len(verdicts)} items: {settled} settled, "
-        f"{len(decided) - settled} disputed. Wrote {out}."
+        f"{len(decided) - settled} disputed."
     )
     return 0
 

@@ -1,12 +1,13 @@
-//! The `knock-game-batch` v1 file that KNOCK's `scripts/export_game_batch.py`
-//! writes. That script's docstring is the spec; this is the Rust reading of it.
+//! The `dorman-batch` v1 file: a batch of items to be reviewed and, once
+//! approved, played. The admin dashboard's generator writes these, and
+//! `dorman-ingest load` reads them.
 
 use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const BATCH_FORMAT: &str = "knock-game-batch";
+pub const BATCH_FORMAT: &str = "dorman-batch";
 pub const BATCH_VERSION: u32 = 1;
 /// A pair item's answer when neither reply is any good.
 pub const BOTH_BAD: &str = "both_bad";
@@ -35,12 +36,11 @@ pub enum BatchItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IntentItem {
-    pub knock_key: String,
+    pub item_key: String,
     pub text: String,
     pub scene: Option<String>,
-    pub generator_intent: String,
+    pub intended_intent: String,
     pub gold_answer: Option<String>,
-    pub judge: Option<Judge>,
     /// Why the answer is what it is; shown only after a player has voted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub explanation: Option<String>,
@@ -48,10 +48,10 @@ pub struct IntentItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PairItem {
-    pub knock_key: String,
+    pub item_key: String,
     pub text: String,
     pub scene: Option<String>,
-    pub generator_intent: String,
+    pub intended_intent: String,
     pub gold_answer: Option<String>,
     pub replies: Vec<Reply>,
     /// Why the answer is what it is; shown only after a player has voted.
@@ -61,20 +61,8 @@ pub struct PairItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Reply {
-    pub knock_key: String,
+    pub item_key: String,
     pub text: String,
-    pub judge: Option<Judge>,
-}
-
-/// KNOCK's judge-ensemble averages (0-10) for one entry.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Judge {
-    pub visitor_voice: f64,
-    pub category_correct: f64,
-    pub safety_compliant: f64,
-    pub natural_quality: f64,
-    pub safety_veto: bool,
-    pub disagreement: f64,
 }
 
 #[derive(Debug, Error)]
@@ -88,10 +76,10 @@ pub enum BatchError {
 }
 
 impl BatchItem {
-    pub fn knock_key(&self) -> &str {
+    pub fn item_key(&self) -> &str {
         match self {
-            BatchItem::Intent(item) => &item.knock_key,
-            BatchItem::Pair(item) => &item.knock_key,
+            BatchItem::Intent(item) => &item.item_key,
+            BatchItem::Pair(item) => &item.item_key,
         }
     }
 
@@ -123,7 +111,7 @@ impl BatchItem {
         match self {
             BatchItem::Intent(_) => intents.iter().any(|intent| intent == answer),
             BatchItem::Pair(item) => {
-                answer == BOTH_BAD || item.replies.iter().any(|reply| reply.knock_key == answer)
+                answer == BOTH_BAD || item.replies.iter().any(|reply| reply.item_key == answer)
             }
         }
     }
@@ -165,10 +153,10 @@ impl Batch {
         let known = |intent: &str| self.intents.iter().any(|known| known == intent);
         let mut seen = HashSet::new();
         for item in &self.items {
-            let key = item.knock_key();
+            let key = item.item_key();
             let bad = |why: &str| Err(BatchError::Item(key.to_string(), why.to_string()));
             if !seen.insert(key) {
-                return bad("duplicate knock_key");
+                return bad("duplicate item_key");
             }
             if item
                 .explanation()
@@ -178,8 +166,8 @@ impl Batch {
             }
             match item {
                 BatchItem::Intent(intent) => {
-                    if !known(&intent.generator_intent) {
-                        return bad("generator_intent is not in the intent list");
+                    if !known(&intent.intended_intent) {
+                        return bad("intended_intent is not in the intent list");
                     }
                     if intent
                         .gold_answer
@@ -193,7 +181,7 @@ impl Batch {
                     let [a, b] = pair.replies.as_slice() else {
                         return bad("a pair needs exactly two replies");
                     };
-                    if key != format!("pair:{}:{}", a.knock_key, b.knock_key) {
+                    if key != format!("pair:{}:{}", a.item_key, b.item_key) {
                         return bad("pair key doesn't match its replies");
                     }
                     if let Some(gold) = &pair.gold_answer {
@@ -215,7 +203,7 @@ mod tests {
     const EXAMPLE: &str = include_str!("../../../fixtures/batch.example.json");
 
     #[test]
-    fn parses_the_example_batch_from_knock() {
+    fn parses_the_example_batch() {
         let batch = Batch::parse(EXAMPLE).unwrap();
         assert_eq!(batch.batch, "example-1");
         assert!(batch.items.iter().any(|item| item.mode() == "pair"));
@@ -288,7 +276,7 @@ mod tests {
         let BatchItem::Pair(inner) = pair else {
             unreachable!()
         };
-        assert!(pair.accepts(&inner.replies[0].knock_key, &batch.intents));
+        assert!(pair.accepts(&inner.replies[0].item_key, &batch.intents));
         assert!(pair.accepts(BOTH_BAD, &batch.intents));
         assert!(!pair.accepts("delivery", &batch.intents));
     }

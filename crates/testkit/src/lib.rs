@@ -17,7 +17,7 @@ use dorman_db::StoredItem;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-/// A real batch written by KNOCK's `scripts/export_game_batch.py`.
+/// The example batch in `fixtures/`.
 pub const EXAMPLE_BATCH: &str = include_str!("../../../fixtures/batch.example.json");
 
 pub fn example_batch() -> Batch {
@@ -68,7 +68,7 @@ pub async fn seed_day(pool: &PgPool, day: NaiveDate) -> Vec<StoredItem> {
     let keys: Vec<String> = batch
         .items
         .iter()
-        .map(|item| item.knock_key().to_string())
+        .map(|item| item.item_key().to_string())
         .collect();
     publish(pool, day, &keys).await
 }

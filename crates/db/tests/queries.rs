@@ -32,7 +32,7 @@ async fn intent_items_store_four_options_including_generator_and_gold(pool: PgPo
         match &stored.item {
             BatchItem::Intent(item) => {
                 assert_eq!(stored.options.len(), 4);
-                assert!(stored.options.contains(&item.generator_intent));
+                assert!(stored.options.contains(&item.intended_intent));
                 if let Some(gold) = &item.gold_answer {
                     assert!(stored.options.contains(gold));
                 }
@@ -72,13 +72,13 @@ async fn a_daily_set_keeps_its_published_order_and_can_be_replaced(pool: PgPool)
     let mut keys: Vec<String> = batch
         .items
         .iter()
-        .map(|i| i.knock_key().to_string())
+        .map(|i| i.item_key().to_string())
         .collect();
     keys.reverse();
     let today = day("2026-10-27");
 
     let items = publish(&pool, today, &keys).await;
-    let got: Vec<&str> = items.iter().map(|i| i.knock_key.as_str()).collect();
+    let got: Vec<&str> = items.iter().map(|i| i.item_key.as_str()).collect();
     assert_eq!(got, keys);
 
     let items = publish(&pool, today, &keys[..2]).await;
@@ -96,15 +96,15 @@ async fn pools_split_new_gold_and_unsettled_carry_overs(pool: PgPool) {
     let yesterday = day("2026-10-26");
     let shown: Vec<String> = plain[..2]
         .iter()
-        .map(|i| i.knock_key().to_string())
-        .chain(gold.iter().map(|i| i.knock_key().to_string()))
+        .map(|i| i.item_key().to_string())
+        .chain(gold.iter().map(|i| i.item_key().to_string()))
         .collect();
     let items = publish(&pool, yesterday, &shown).await;
 
     // One of yesterday's plain items settled; the other didn't.
     let settled = items
         .iter()
-        .find(|i| i.knock_key == plain[0].knock_key())
+        .find(|i| i.item_key == plain[0].item_key())
         .unwrap();
     sqlx::query("INSERT INTO consensus (item_id, label, share, total_weight, status) VALUES ($1, 'x', 0.9, 6, 'settled')")
         .bind(settled.id)
@@ -116,12 +116,12 @@ async fn pools_split_new_gold_and_unsettled_carry_overs(pool: PgPool) {
 
     let mut expected_new: Vec<String> = plain[2..]
         .iter()
-        .map(|i| i.knock_key().to_string())
+        .map(|i| i.item_key().to_string())
         .collect();
     expected_new.sort();
     assert_eq!(pools.new, expected_new);
     assert_eq!(pools.gold.len(), gold.len());
-    assert_eq!(pools.carry_over, vec![plain[1].knock_key().to_string()]);
+    assert_eq!(pools.carry_over, vec![plain[1].item_key().to_string()]);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -131,7 +131,7 @@ async fn carry_overs_come_least_settled_first(pool: PgPool) {
         .items
         .iter()
         .filter(|i| i.gold_answer().is_none())
-        .map(|i| i.knock_key().to_string())
+        .map(|i| i.item_key().to_string())
         .collect();
     let yesterday = day("2026-10-26");
     let items = publish(&pool, yesterday, &plain[..2]).await;
@@ -218,15 +218,15 @@ async fn deleting_a_player_removes_their_votes(pool: PgPool) {
 
 // -- batch review ---------------------------------------------------------------
 
-/// The example batch under another name, with its knock_keys prefixed so it
+/// The example batch under another name, with its item_keys prefixed so it
 /// can be loaded alongside the original.
 fn renamed(name: &str) -> Batch {
     let mut batch = example_batch();
     batch.batch = name.to_string();
     for item in &mut batch.items {
         match item {
-            BatchItem::Intent(i) => i.knock_key = format!("{name}/{}", i.knock_key),
-            BatchItem::Pair(p) => p.knock_key = format!("{name}/{}", p.knock_key),
+            BatchItem::Intent(i) => i.item_key = format!("{name}/{}", i.item_key),
+            BatchItem::Pair(p) => p.item_key = format!("{name}/{}", p.item_key),
         }
     }
     batch
@@ -248,7 +248,7 @@ async fn a_loaded_batch_waits_for_review_until_approved(pool: PgPool) {
 
     let items = dorman_db::batch_items(&pool, &batch.batch).await.unwrap();
     assert_eq!(items.len(), batch.items.len());
-    assert!(items.windows(2).all(|w| w[0].knock_key < w[1].knock_key));
+    assert!(items.windows(2).all(|w| w[0].item_key < w[1].item_key));
 
     let now = Utc::now();
     assert!(dorman_db::approve_batch(&pool, &batch.batch, now)
@@ -281,11 +281,11 @@ async fn a_daily_set_leaves_out_items_from_unapproved_batches(pool: PgPool) {
         .items
         .iter()
         .chain(&approved.items)
-        .map(|i| i.knock_key().to_string())
+        .map(|i| i.item_key().to_string())
         .collect();
     let items = publish(&pool, day("2026-10-27"), &keys).await;
     assert_eq!(items.len(), approved.items.len());
-    assert!(items.iter().all(|i| !i.knock_key.starts_with("pending/")));
+    assert!(items.iter().all(|i| !i.item_key.starts_with("pending/")));
 
     // Nothing approved at all still publishes, as an empty day.
     assert!(publish(&pool, day("2026-10-28"), &keys[..1])
@@ -306,10 +306,10 @@ async fn yesterdays_items_carry_over_only_from_approved_batches(pool: PgPool) {
     // Published before the gate, say, by writing the set directly.
     sqlx::query(
         "INSERT INTO daily_sets (day, item_ids)
-         SELECT $1, array_agg(id) FROM items WHERE knock_key = $2",
+         SELECT $1, array_agg(id) FROM items WHERE item_key = $2",
     )
     .bind(yesterday)
-    .bind(plain.knock_key())
+    .bind(plain.item_key())
     .execute(&pool)
     .await
     .unwrap();
@@ -387,19 +387,19 @@ async fn an_unapproved_batch_never_reaches_a_daily_set(pool: PgPool) {
                     let mut item = if n % 3 == 2 { pair } else { intent }.unwrap().clone();
                     match &mut item {
                         BatchItem::Intent(i) => {
-                            i.knock_key = key;
-                            i.gold_answer = gold.then(|| i.generator_intent.clone());
+                            i.item_key = key;
+                            i.gold_answer = gold.then(|| i.intended_intent.clone());
                         }
                         BatchItem::Pair(p) => {
-                            p.knock_key = key;
-                            p.gold_answer = gold.then(|| p.replies[0].knock_key.clone());
+                            p.item_key = key;
+                            p.gold_answer = gold.then(|| p.replies[0].item_key.clone());
                         }
                     }
                     item
                 })
                 .collect();
             load_pending(&pool, &batch).await;
-            let keys = batch.items.iter().map(|i| i.knock_key().to_string());
+            let keys = batch.items.iter().map(|i| i.item_key().to_string());
             if *is_approved {
                 approve(&pool, &batch.batch).await;
                 approved_keys.extend(keys.clone());
@@ -414,7 +414,7 @@ async fn an_unapproved_batch_never_reaches_a_daily_set(pool: PgPool) {
             .collect();
         sqlx::query(
             "INSERT INTO daily_sets (day, item_ids)
-             SELECT $1, coalesce(array_agg(id), '{}') FROM items WHERE knock_key = ANY ($2)",
+             SELECT $1, coalesce(array_agg(id), '{}') FROM items WHERE item_key = ANY ($2)",
         )
         .bind(yesterday)
         .bind(&shown)
@@ -434,9 +434,9 @@ async fn an_unapproved_batch_never_reaches_a_daily_set(pool: PgPool) {
         assert_eq!(today.len(), picked.len());
         for item in &today {
             assert!(
-                approved_keys.contains(&item.knock_key),
+                approved_keys.contains(&item.item_key),
                 "{} is from an unapproved batch (case: {batches:?})",
-                item.knock_key
+                item.item_key
             );
         }
         // And publishing every key there is still only lets approved ones in.
@@ -545,7 +545,7 @@ async fn a_day_completes_once_every_item_is_answered_and_stays_complete(pool: Pg
     let more: Vec<String> = example_batch()
         .items
         .iter()
-        .map(|i| i.knock_key().to_string())
+        .map(|i| i.item_key().to_string())
         .collect();
     publish(&pool, today, &more).await;
     assert!(dorman_db::record_progress(&pool, player, today)
@@ -567,7 +567,7 @@ async fn a_day_completes_once_every_item_is_answered_and_stays_complete(pool: Pg
 #[sqlx::test(migrations = "./migrations")]
 async fn completed_days_come_oldest_first_and_only_the_players_own(pool: PgPool) {
     let batch = load_example(&pool).await;
-    let key = batch.items[0].knock_key().to_string();
+    let key = batch.items[0].item_key().to_string();
     let player = dorman_db::create_player(&pool).await.unwrap();
     let other = dorman_db::create_player(&pool).await.unwrap();
     for text in ["2026-10-27", "2026-10-25", "2026-10-26"] {
@@ -647,6 +647,76 @@ async fn verdicts_carry_the_weighted_split_heaviest_first(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
+async fn old_format_items_are_rewritten_by_the_neutral_keys_migration(pool: PgPool) {
+    let mut before = sqlx::migrate!("./migrations");
+    before.migrations = Cow::Owned(
+        before
+            .migrations
+            .iter()
+            .filter(|m| m.version < 13)
+            .cloned()
+            .collect(),
+    );
+    before.run(&pool).await.unwrap();
+    // A pair and an intent item as the old format stored them.
+    let pair = serde_json::json!({
+        "knock_key": "pair:a:b", "mode": "pair", "text": "Package for you",
+        "scene": null, "generator_intent": "delivery", "gold_answer": null,
+        "replies": [
+            {"knock_key": "a", "text": "Leave it there.", "judge": {"safety_veto": false}},
+            {"knock_key": "b", "text": "Nobody's home.", "judge": null}
+        ]
+    });
+    let intent = serde_json::json!({
+        "knock_key": "i1", "mode": "intent", "text": "Is Mark here?",
+        "scene": null, "generator_intent": "person_lookup", "gold_answer": null,
+        "judge": {"category_correct": 9.0}, "options": ["person_lookup", "visitation"]
+    });
+    for (key, mode, payload) in [("pair:a:b", "pair", pair), ("i1", "intent", intent)] {
+        sqlx::query(
+            "INSERT INTO items (id, knock_key, mode, payload, batch)
+             VALUES (gen_random_uuid(), $1, $2, $3, 'old')",
+        )
+        .bind(key)
+        .bind(mode)
+        .bind(payload)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    dorman_db::migrate(&pool).await.unwrap();
+
+    let items = dorman_db::batch_items(&pool, "old").await.unwrap();
+    assert_eq!(items.len(), 2, "both rows still decode as items");
+    let keys: Vec<&str> = items.iter().map(|i| i.item_key.as_str()).collect();
+    assert!(keys.contains(&"pair:a:b") && keys.contains(&"i1"));
+    let payloads: Vec<serde_json::Value> =
+        sqlx::query_scalar("SELECT payload FROM items ORDER BY item_key")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    for payload in &payloads {
+        let text = payload.to_string();
+        for gone in ["knock_key", "generator_intent", "judge"] {
+            assert!(!text.contains(gone), "{gone} survived: {text}");
+        }
+    }
+    // Running it again changes nothing.
+    let before_rerun = payloads.clone();
+    sqlx::raw_sql(include_str!("../migrations/0013_neutral_item_keys.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let after: Vec<serde_json::Value> =
+        sqlx::query_scalar("SELECT payload FROM items ORDER BY item_key")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(after, before_rerun);
+}
+
+#[sqlx::test(migrations = false)]
 async fn days_already_played_are_backfilled(pool: PgPool) {
     let mut before = sqlx::migrate!("./migrations");
     before.migrations = Cow::Owned(
@@ -658,6 +728,12 @@ async fn days_already_played_are_backfilled(pool: PgPool) {
             .collect(),
     );
     before.run(&pool).await.unwrap();
+    // The seeding helpers use today's column name; the later migration that
+    // renames it skips a table that already has it.
+    sqlx::query("ALTER TABLE items RENAME COLUMN knock_key TO item_key")
+        .execute(&pool)
+        .await
+        .unwrap();
     let today = day("2026-10-27");
     let items = seed_day(&pool, today).await;
     let finished = dorman_db::create_player(&pool).await.unwrap();
@@ -696,7 +772,7 @@ async fn gold_retires_after_its_showings(pool: PgPool) {
         .items
         .iter()
         .filter(|i| i.gold_answer().is_some())
-        .map(|i| i.knock_key().to_string())
+        .map(|i| i.item_key().to_string())
         .collect();
     let (first, rest) = gold.split_first().unwrap();
     publish_days(
@@ -742,7 +818,7 @@ async fn a_retired_gold_item_never_comes_back(pool: PgPool) {
             .map(|n| {
                 let mut item = gold_item.clone();
                 if let BatchItem::Intent(i) = &mut item {
-                    i.knock_key = format!("gold-{n}");
+                    i.item_key = format!("gold-{n}");
                 }
                 item
             })
@@ -764,8 +840,8 @@ async fn a_retired_gold_item_never_comes_back(pool: PgPool) {
             dorman_db::set_daily(&pool, today, &keys).await.unwrap();
         }
         let shown: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT i.knock_key, count(*) FROM daily_sets d JOIN items i ON i.id = ANY (d.item_ids)
-             GROUP BY i.knock_key",
+            "SELECT i.item_key, count(*) FROM daily_sets d JOIN items i ON i.id = ANY (d.item_ids)
+             GROUP BY i.item_key",
         )
         .fetch_all(&pool)
         .await
@@ -784,7 +860,7 @@ async fn overtime_serves_past_items_lightest_first_never_todays_or_answered_ones
     let keys: Vec<String> = batch
         .items
         .iter()
-        .map(|i| i.knock_key().to_string())
+        .map(|i| i.item_key().to_string())
         .collect();
     let (yesterday, today) = (day("2026-10-26"), day("2026-10-27"));
     let shown = publish(&pool, yesterday, &keys[..4]).await;
@@ -817,7 +893,7 @@ async fn overtime_serves_past_items_lightest_first_never_todays_or_answered_ones
             .await
             .unwrap()
             .is_none());
-        served.push(item.knock_key);
+        served.push(item.item_key);
         assert!(served.len() <= 3);
     }
     assert_eq!(
@@ -845,7 +921,7 @@ async fn overtime_serves_past_items_lightest_first_never_todays_or_answered_ones
 }
 
 async fn batch_item_id(pool: &PgPool, key: &str) -> uuid::Uuid {
-    sqlx::query_scalar("SELECT id FROM items WHERE knock_key = $1")
+    sqlx::query_scalar("SELECT id FROM items WHERE item_key = $1")
         .bind(key)
         .fetch_one(pool)
         .await
@@ -898,7 +974,7 @@ async fn weekly_standings_cover_handles_in_the_window_and_say_who_is_flagged(poo
     let keys: Vec<String> = batch
         .items
         .iter()
-        .map(|i| i.knock_key().to_string())
+        .map(|i| i.item_key().to_string())
         .collect();
     let (before, inside) = (day("2026-10-25"), day("2026-10-27"));
     let old = publish(&pool, before, &keys[..1]).await;

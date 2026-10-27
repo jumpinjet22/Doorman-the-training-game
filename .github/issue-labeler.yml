@@ -8,7 +8,7 @@
 'area: scorer':
   - '(^|\n)([^\n]*, )?Scoring(, [^\n]*)?(\r?\n|$)'
 'area: ingest':
-  - '(^|\n)([^\n]*, )?Ingest \(KNOCK import/export\)(, [^\n]*)?(\r?\n|$)'
+  - '(^|\n)([^\n]*, )?Ingest / generation(, [^\n]*)?(\r?\n|$)'
 'area: db':
   - '(^|\n)([^\n]*, )?Database(, [^\n]*)?(\r?\n|$)'
 'area: docs':

@@ -1,3 +1,5 @@
+> **Historical:** written while the game was coupled to the KNOCK repo. The current design is self-contained; see README.md.
+
 # Plan: from scaffold to a finished, fully tested public game
 
 **Starting point (commit `c1b8bbe`):** the KNOCK export/import scripts are

@@ -1,8 +1,7 @@
 # Security Policy
 
-"Who's At The Door?" is a public game. Anyone can play, and the votes feed back
-into the training data of [KNOCK](https://github.com/jumpinjet22/KNOCK), a
-doorbell assistant. So a security bug here can mean poisoned training data,
+"Who's At The Door?" is a public game. Anyone can play, and the votes become
+training data for a doorbell-assistant model. So a security bug here can mean poisoned training data,
 bypassed abuse protections, or players' anonymous IDs being exposed. Reports
 are taken seriously and handled privately.
 
@@ -60,8 +59,7 @@ In scope, for example:
 Out of scope:
 
 - vulnerabilities in third-party services this talks to (Cloudflare Turnstile,
-  Postgres) or in KNOCK itself; for KNOCK, use
-  [its policy](https://github.com/jumpinjet22/KNOCK/security/policy)
+  Postgres)
 - attacks that already need access to the host, the database or the secrets
 - deliberately insecure configuration, such as running with Cloudflare's
   Turnstile test keys or `DORMAN_SECURE_COOKIES=false` in production, or
