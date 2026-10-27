@@ -1,13 +1,61 @@
-# Dorman: Who's At The Door?
+# Doorman: Who's At The Door?
 
-A free daily web game that crowd-reviews **synthetic** data for fine-tuning a
-doorbell-assistant model. Players guess why a visitor is at the door, or pick
-the better of two replies. Gold questions and Dawid-Skene scoring quietly turn
-trolls' votes down. The crowd's verdicts, with a maintainer's review, become
-the training dataset.
+A free daily web game that harvests labels for training a doorbell
+assistant. Players read what a visitor says at the door and guess why
+they're there, or pick the better of two replies the assistant could give.
+The crowd's answers, weighed by how trustworthy each player has proven to be,
+become training data: intent labels for a classifier, and reply preferences
+for DPO, exported each night for a training job to pick up.
 
-This repo is self-contained: it makes its own data, reviews it, and exports
-it. It does not depend on any other codebase.
+Every visitor line is **synthetic**: generated, reviewed by a person, then
+played. No real doorbell footage or recordings are ever shown.
+
+Doorman carries KNOCK's branding but is standalone: it makes its own data,
+runs its own game and exports its own datasets, and doesn't connect to KNOCK
+or any other codebase. Its planned home is `doorman.knock.cam`.
+
+> The code predates the spelling fix, so crates, binaries and settings are
+> still named `dorman` (`dorman-api`, `dorman-ingest`, `DORMAN_*`).
+
+## How to play
+
+- **Ten cards a day**, the same for everyone, resetting at midnight UTC.
+- **Intent cards:** read what the visitor said (and the scene, if there is
+  one) and pick why they're at the door, from four choices.
+- **Pair cards:** pick the better of two replies, or say both are bad.
+- After each answer you see how everyone else split. The next morning,
+  `/yesterday` reveals what the crowd decided, with an explanation.
+- Streaks, ranks and a weekly `/leaderboard` reward playing carefully;
+  **Overtime** serves extra cards once the day's set is done.
+
+Some cards have a known answer and are used to measure each player. They look
+exactly like every other card, so the only way to score well is to answer
+honestly.
+
+## What it produces
+
+`dorman-ingest export <dir>` writes what the crowd has decided, for a
+training job to pick up. Run it after the scorer's nightly pass.
+
+| File | One row per | Fields |
+|---|---|---|
+| `intent.jsonl` | labelled intent item | `id`, `text`, `scene`, `label`, `source`, `intended_intent`, `agreement`, `weight`, `votes`, `batch` |
+| `dpo.jsonl` | pair item with a preferred reply | `prompt`, `chosen`, `rejected` (loads straight into a DPO trainer), plus `id`, `text`, `scene`, `source`, `agreement`, `weight`, `votes`, `batch` |
+| `manifest.json` | export | format and version, when it ran, `scored_through` (latest scoring run), row count and SHA-256 per file, and how many items were skipped and why |
+
+- Gold items are labelled with their known answer (`source: "gold"`).
+  Everything else is exported only once the scorer has settled it
+  (`source: "crowd"`). Open and disputed items are skipped, and so are pairs
+  judged `both_bad`, since there's no reply to prefer.
+- Brigade and cohort votes are already zeroed, so they never shape a label.
+- `agreement` is the share of trust behind the exported label and `weight` the
+  total trust on the item. Filter or weight on them to keep only confident
+  labels. Both are null for gold nobody has answered yet.
+- Only approved batches are exported. Files are written through a rename, so
+  a reader never sees half of one, and the manifest is written last.
+
+**An export holds every gold answer.** Keep it off the web server's static
+paths and out of the repo; anyone with it can pass as a perfect player.
 
 ## How data moves
 
@@ -23,17 +71,6 @@ a dorman-batch file ─▶ dorman-ingest load      (pending review)
 A batch is a `dorman-batch` v1 JSON file (see `fixtures/batch.example.json`
 and `crates/core/src/batch.rs`). Everything downstream reads and writes
 Postgres; nothing is exchanged with another system.
-
-## Layout
-
-| Path | What |
-|---|---|
-| `crates/core` | Batch format, daily-set picking, intent options, share card. Pure, no IO. |
-| `crates/db` | Postgres queries and `migrations/`. |
-| `crates/ingest` | `dorman-ingest`: `migrate`, `load <batch.json>`, `review`/`approve <batch>`, `daily [--day] [--gold-showings N]` (gold retires after N sets, default 5; warns when it runs low), `clear-handle <handle>`, `export <dir>` (training data, below). |
-| `crates/api` | `dorman-api`: Axum server, renders pages itself (askama + vanilla JS): today's game one card at a time, results and share card, Overtime, ranks, `/leaderboard`, `/yesterday`, `/about`. |
-| `scorer/` | `dorman-scorer`: Python nightly job. Gold trust, Dawid-Skene, behavior flags, consensus. |
-| `fixtures/batch.example.json` | An example `dorman-batch` file, used by tests. |
 
 ## Running it locally
 
@@ -68,6 +105,8 @@ still come round (gold runs on for up to 5 days) would leak a gold answer.
 Players may also say how sure they are (`unsure`, `fairly`, `certain`); that
 is stored on the vote and summarised on their results page, and the scorer
 ignores it.
+
+## Configuration
 
 `dorman-api` settings, as environment variables:
 
@@ -111,6 +150,17 @@ write a new `openssl rand -hex 32` to the secret file (or variable) and
 restart every instance together, since instances with different secrets
 reject each other's cookies.
 
+## Layout
+
+| Path | What |
+|---|---|
+| `crates/core` | Batch format, daily-set picking, intent options, share card. Pure, no IO. |
+| `crates/db` | Postgres queries and `migrations/`. |
+| `crates/ingest` | `dorman-ingest`: `migrate`, `load <batch.json>`, `review`/`approve <batch>`, `daily [--day] [--gold-showings N]` (gold retires after N sets, default 5; warns when it runs low), `clear-handle <handle>`, `export <dir>` (training data, below). |
+| `crates/api` | `dorman-api`: Axum server, renders pages itself (askama + vanilla JS): today's game one card at a time, results and share card, Overtime, ranks, `/leaderboard`, `/yesterday`, `/about`. |
+| `scorer/` | `dorman-scorer`: Python nightly job. Gold trust, Dawid-Skene, behavior flags, consensus. |
+| `fixtures/batch.example.json` | An example `dorman-batch` file, used by tests. |
+
 ## Tests
 
 Most suites need Postgres. Point `DATABASE_URL` at a role that can create
@@ -148,7 +198,7 @@ CI fails under these line-coverage gates: `dorman-core` 85%, `dorman-db` 85%,
 Tests marked `xfail(strict=True)` are known gaps that are planned work. They
 fail CI the moment they start passing, so the marker gets removed with the fix.
 
-## Trust and consensus, in short
+## Keeping the crowd honest
 
 - A new player's vote counts about 0.1 of a veteran's: `Beta(1, 9)` over their
   gold answers. Gold is mixed into every daily set and looks like everything else,
@@ -193,34 +243,12 @@ Every threshold is configurable: `--profile soft-launch` (weight 2.0, share
 `python -m dorman_scorer --help`. 5.0 weight is about 8 regulars with 20 gold
 answers each, so use the soft-launch profile until real traffic exists.
 
-## Training data
-
-`dorman-ingest export <dir>` writes what the crowd has decided, for a
-training job to pick up. Run it after the scorer's nightly pass.
-
-| File | One row per | Fields |
-|---|---|---|
-| `intent.jsonl` | labelled intent item | `id`, `text`, `scene`, `label`, `source`, `intended_intent`, `agreement`, `weight`, `votes`, `batch` |
-| `dpo.jsonl` | pair item with a preferred reply | `prompt`, `chosen`, `rejected` (loads straight into a DPO trainer), plus `id`, `text`, `scene`, `source`, `agreement`, `weight`, `votes`, `batch` |
-| `manifest.json` | export | format and version, when it ran, `scored_through` (latest scoring run), row count and SHA-256 per file, and how many items were skipped and why |
-
-- Gold items are labelled with their known answer (`source: "gold"`).
-  Everything else is exported only once the scorer has settled it
-  (`source: "crowd"`). Open and disputed items are skipped, and so are pairs
-  judged `both_bad`, since there's no reply to prefer.
-- Brigade and cohort votes are already zeroed, so they never shape a label.
-- `agreement` is the share of trust behind the exported label and `weight` the
-  total trust on the item. Filter or weight on them to keep only confident
-  labels. Both are null for gold nobody has answered yet.
-- Only approved batches are exported. Files are written through a rename, so
-  a reader never sees half of one, and the manifest is written last.
-
-**An export holds every gold answer.** Keep it off the web server's static
-paths and out of the repo; anyone with it can pass as a perfect player.
-
 ## Not done yet (before going public)
 
 - Terms, privacy policy, 13+ age gate (see section 8 of the plan).
+- A line on `/about` telling players their answers train a model.
+- The nightly training job: export after the scorer, train an intent
+  baseline, keep the new model only if it beats the last.
 - Switching sqlx to compile-time-checked `query!` macros once CI has Postgres.
 
 ## Security
