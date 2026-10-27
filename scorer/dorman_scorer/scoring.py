@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date
 
+from dorman_scorer.brigade import brigaded
+from dorman_scorer.config import Config
 from dorman_scorer.consensus import BOTH_BAD, Verdict, verdict
 from dorman_scorer.dawid_skene import dawid_skene
 from dorman_scorer.flags import behavior_flags
@@ -24,8 +26,9 @@ def _pair_slot(item: Item, answer: str) -> str:
 
 
 def score(
-    items: list[Item], votes: list[Vote], today: date
+    items: list[Item], votes: list[Vote], today: date, config: Config | None = None
 ) -> tuple[dict[str, PlayerScore], list[Verdict]]:
+    config = config or Config()
     by_id = {item.id: item for item in items}
     votes = [v for v in votes if v.item_id in by_id]
     by_player: dict[str, list[Vote]] = defaultdict(list)
@@ -38,10 +41,16 @@ def score(
         right = sum(1 for v in gold_votes if v.answer == by_id[v.item_id].gold_answer)
         gold_trusts[player] = gold_trust(right, len(gold_votes))
 
+    # Brigaded votes count for nothing from here on, Dawid-Skene included, so
+    # they can't drag the honest players' estimated accuracy down either.
+    zeroed = brigaded(by_id, votes, gold_trusts, config)
+    counted = [v for v in votes if v.player_id not in zeroed.get(v.item_id, ())]
+
     # Dawid-Skene per mode, since intent and pair items answer different questions.
     ds_accuracy: dict[str, list[float]] = defaultdict(list)
+    posteriors: dict[str, dict[str, float]] = {}
     for mode in ("intent", "pair"):
-        mode_votes = [v for v in votes if by_id[v.item_id].mode == mode]
+        mode_votes = [v for v in counted if by_id[v.item_id].mode == mode]
         if not mode_votes:
             continue
         if mode == "intent":
@@ -62,6 +71,13 @@ def score(
                 if i.mode == mode and i.gold_answer
             }
         result = dawid_skene(triples, labels, init_weights=gold_trusts, gold=gold)
+        for item_id, probs in result.posteriors.items():
+            item = by_id[item_id]
+            if mode == "pair" and len(item.reply_keys) == 2:
+                answers = [*item.reply_keys, BOTH_BAD]
+            else:
+                answers = result.labels
+            posteriors[item_id] = {a: float(p) for a, p in zip(answers, probs, strict=True)}
         chance = 1.0 / len(labels)
         for player, accuracy in result.accuracy.items():
             ds_accuracy[player].append(max(0.0, (accuracy - chance) / (1.0 - chance)))
@@ -79,11 +95,14 @@ def score(
 
     trust_by_player = {p: s.trust for p, s in players.items()}
     item_votes: dict[str, list[Vote]] = defaultdict(list)
-    for vote in votes:
+    for vote in counted:
         item_votes[vote.item_id].append(vote)
-    verdicts = [
-        verdict(item, item_votes[item.id], trust_by_player, today)
-        for item in items
-        if item.gold_answer is None
-    ]
+    verdicts = []
+    for item in items:
+        if item.gold_answer is None:
+            v = verdict(
+                item, item_votes[item.id], trust_by_player, today, config, posteriors.get(item.id)
+            )
+            v.zeroed_votes = len(zeroed.get(item.id, ()))
+            verdicts.append(v)
     return players, verdicts

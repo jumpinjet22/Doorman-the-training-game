@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 
 @dataclass(frozen=True)
@@ -12,6 +12,9 @@ class Vote:
     ms_to_answer: int
     # Where the chosen answer sat in the list the player saw (None if unknown).
     position: int | None = None
+    # How old the player's account was when they cast this vote (None if
+    # unknown, which counts as established).
+    account_age: timedelta | None = None
 
 
 @dataclass(frozen=True)

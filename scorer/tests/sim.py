@@ -7,6 +7,11 @@ Player types:
 - troll: always the same wrong label, fast
 - brigade: brand-new accounts that all push one wrong label on the same
   items, answering gold honestly enough to blend in
+- newcomer: an honest player whose account is brand new on the last day, so
+  brigade detection has honest new accounts to tell apart from brigades
+
+Regulars' accounts are `regular_age_days` old when the run starts; brigades
+and newcomers sign up on the last day and vote within hours.
 """
 
 from __future__ import annotations
@@ -29,6 +34,8 @@ class Crowd:
     trolls: int = 0
     brigades: int = 0
     brigade_size: int = 15
+    newcomers: int = 0
+    regular_age_days: int = 30
     days: int = 7
     new_per_day: int = 6
     gold_per_day: int = 3
@@ -81,7 +88,7 @@ def simulate(crowd: Crowd) -> World:
         player = f"{kind}{n}"
         world.player_kind[player] = kind
         troll_label = rng.choice(LABELS)
-        for _, daily in days:
+        for d, (_, daily) in enumerate(days):
             for item in daily:
                 right = answer_of(item)
                 if kind == "honest":
@@ -91,10 +98,23 @@ def simulate(crowd: Crowd) -> World:
                     ans, ms = rng.choice(LABELS), rng.randint(300, 900)
                 else:
                     ans, ms = troll_label, rng.randint(300, 900)
-                world.votes.append(Vote(player, item.id, ans, ms, rng.randint(0, 3)))
+                age = timedelta(days=crowd.regular_age_days + d)
+                world.votes.append(Vote(player, item.id, ans, ms, rng.randint(0, 3), age))
+
+    def new_account() -> timedelta:
+        return timedelta(hours=rng.uniform(0, 24))
+
+    last_day = days[-1][1]
+    for n in range(crowd.newcomers):
+        player = f"newcomer{n}"
+        world.player_kind[player] = "newcomer"
+        for item in last_day:
+            right = answer_of(item)
+            ans = right if rng.random() < crowd.honest_accuracy else wrong(right, rng)
+            ms, position = rng.randint(2500, 9000), rng.randint(0, 3)
+            world.votes.append(Vote(player, item.id, ans, ms, position, new_account()))
 
     # Brigades show up on the last day only and hit that day's new items.
-    last_day = days[-1][1]
     for b in range(crowd.brigades):
         for n in range(crowd.brigade_size):
             player = f"brigade{b}_{n}"
@@ -102,5 +122,7 @@ def simulate(crowd: Crowd) -> World:
             for item in last_day:
                 right = answer_of(item)
                 ans = right if item.gold_answer else wrong(right, random.Random(f"{b}{item.id}"))
-                world.votes.append(Vote(player, item.id, ans, rng.randint(2500, 6000), None))
+                world.votes.append(
+                    Vote(player, item.id, ans, rng.randint(2500, 6000), None, new_account())
+                )
     return world
