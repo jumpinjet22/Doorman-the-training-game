@@ -19,7 +19,7 @@ USER nonroot
 ENTRYPOINT ["/usr/local/bin/dorman-api"]
 
 # The nightly jobs: scoring, the training export, and the trainer.
-FROM python:3.12-slim-bookworm AS jobs
+FROM python:3.15-slim-bookworm AS jobs
 COPY --from=build /src/target/release/dorman-ingest /usr/local/bin/
 COPY scorer /tmp/scorer
 COPY trainer /tmp/trainer
